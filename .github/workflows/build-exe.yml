@@ -1,1 +1,26 @@
-
+name: Build EXE
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download adb (platform-tools)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://dl.google.com/android/repository/platform-tools-latest-windows.zip -OutFile pt.zip
+          Expand-Archive pt.zip -DestinationPath pc
+      - run: pip install pyinstaller
+      - name: Build exe (asks for admin rights)
+        working-directory: pc
+        run: pyinstaller --onefile --noconsole --uac-admin --name DeviceDoctor --add-data "platform-tools;platform-tools" app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeviceDoctor-exe
+          path: pc/dist/DeviceDoctor.exe
