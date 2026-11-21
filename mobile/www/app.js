@@ -59,6 +59,7 @@
     if (!DD) setR('native', 'الوصول للنظام', 'warn', 'التطبيق يعمل بدون الجزء الأصلي (غالبًا فتحته من المتصفح).', 'ثبّت نسخة APK الأصلية.');
     else {
       try { evalBattery(await DD.getBattery(), LOCAL); } catch (e) { setR('battery', 'البطارية', 'info', 'تعذّرت القراءة'); }
+      try { evalBatteryDeep(await DD.batteryDeep(), LOCAL); } catch (e) { /* غير مدعوم */ }
       try { evalSystem(await DD.getSystem(), LOCAL); } catch (e) { setR('system', 'النظام', 'info', 'تعذّرت القراءة'); }
       try { evalSensors((await DD.getSensors()).sensors, LOCAL); } catch (e) { setR('sensorlist', 'الحساسات', 'info', 'تعذّرت القراءة'); }
     }
@@ -90,6 +91,118 @@
       var s2 = b.cycleCount > 800 ? 'bad' : b.cycleCount > 500 ? 'warn' : 'ok';
       setR(P.k + 'cycles', P.n + 'دورات الشحن', s2, b.cycleCount + ' دورة', s2 === 'ok' ? '' : 'البطارية قاربت نهاية عمرها.');
     } else setR(P.k + 'cycles', P.n + 'دورات الشحن', 'info', 'هذا الجهاز/الأندرويد لا يكشف عدد الدورات (يتوفر من أندرويد 14).');
+  }
+
+
+  /* ───────── تقييم البطارية العميق (قراءات حقيقية) ───────── */
+  function num(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
+  var OCV = [[0, 3400], [10, 3600], [20, 3700], [40, 3770], [60, 3850], [80, 4000], [100, 4200]];
+  function ocvAt(l) {
+    for (var i = 1; i < OCV.length; i++) if (l <= OCV[i][0]) { var a = OCV[i - 1], b = OCV[i]; return a[1] + (b[1] - a[1]) * (l - a[0]) / (b[0] - a[0]); }
+    return 4200;
+  }
+  function healthFrom(bd) {
+    var sf = bd.sysfs || {}, b = bd.battery || {}, cf = num(sf.charge_full), cfd = num(sf.charge_full_design);
+    if (cf && cfd && cfd > 0) return { pct: cf * 100 / cfd, src: 'قراءة مباشرة من البطارية (السعة الحالية ÷ سعة المصنع)', real: true, cur: cf / 1000, des: cfd / 1000 };
+    var ef = num(sf.energy_full), efd = num(sf.energy_full_design);
+    if (ef && efd && efd > 0) return { pct: ef * 100 / efd, src: 'قراءة مباشرة من البطارية (الطاقة الحالية ÷ طاقة المصنع)', real: true };
+    var fc = num(sf.fg_fullcaprep), fn = num(sf.fg_fullcapnom);
+    if (fc && fn && fn > 0 && fc / fn < 1.6) return { pct: fc * 100 / fn, src: 'قراءة من دائرة قياس البطارية (fuel gauge)', real: true };
+    if (bd.soh > 0 && bd.soh <= 100) return { pct: bd.soh, src: 'حالة الصحة من النظام (أندرويد 14+)', real: true };
+    var cc = b.chargeCounter || 0, lvl = b.level, des = bd.designMah;
+    if (cc > 0 && lvl >= 20 && lvl <= 95 && des > 500) {
+      var est = cc / 1000 * 100 / lvl;
+      if (est < des * 0.2 || est > des * 1.6) est = cc * 100 / lvl;
+      if (est >= des * 0.2 && est <= des * 1.6) return { pct: Math.min(100, est * 100 / des), src: 'تقدير من عدّاد الشحن (تقريبي، أدق إذا النسبة بين 30–90%)', real: false, cur: est, des: des };
+    }
+    return null;
+  }
+  function evalBatteryDeep(bd, P) {
+    if (!bd) return;
+    var b = bd.battery || {}, sf = bd.sysfs || {}, h = healthFrom(bd);
+    if (h) {
+      var st = h.pct >= 80 ? 'ok' : h.pct >= 60 ? 'warn' : 'bad', word = h.pct >= 90 ? 'ممتازة' : h.pct >= 80 ? 'جيدة' : h.pct >= 70 ? 'متوسطة (بدأت تضعف)' : h.pct >= 60 ? 'ضعيفة' : 'متهالكة';
+      setR(P.k + 'bh', P.n + 'صحة البطارية (العمر)', st, 'الصحة ≈ ' + Math.round(h.pct) + '% — ' + word + (h.cur ? ' | السعة الفعلية ≈ ' + Math.round(h.cur) + ' من ' + Math.round(h.des) + ' mAh' : '') + ' | المصدر: ' + h.src,
+        st === 'ok' ? '' : (st === 'bad' ? 'السعة نزلت كثير؛ استبدال البطارية هو الحل.' : 'تتحمل وقت أقل من أول؛ إذا تنطفي بسرعة غيّرها.') + (h.real ? '' : ' (الرقم تقريبي: أعد القياس والنسبة بين 30 و90% بدون تشغيل ثقيل)'));
+    } else {
+      setR(P.k + 'bh', P.n + 'صحة البطارية (العمر)', 'info', 'هذا الجهاز لا يكشف سعة المصنع/السعة الحالية للتطبيقات.', 'استعمل اختبار الحمل (يقيس مقاومة البطارية) كمؤشر للضعف، أو *#0228# / قوائم الصيانة بالجهاز إن وجدت.');
+    }
+    var cyc = b.cycleCount > 0 ? b.cycleCount : (num(sf.cycle_count) || num(sf.battery_cycle) || 0);
+    if (cyc > 0) setR(P.k + 'cycles', P.n + 'دورات الشحن', cyc > 800 ? 'bad' : cyc > 500 ? 'warn' : 'ok', cyc + ' دورة (البطارية تتحمل عادة 500–800)', cyc > 500 ? 'قاربت نهاية عمرها.' : '');
+    if (b.plugged === 0 && b.level >= 15 && b.voltage > 0) {
+      var exp = ocvAt(b.level), d = exp - b.voltage;
+      var s2 = d > 250 ? 'bad' : d > 160 ? 'warn' : 'ok';
+      setR(P.k + 'bcurve', P.n + 'الفولتية مقابل النسبة', s2, 'عند ' + b.level + '% المتوقع ≈ ' + Math.round(exp) + ' mV والمقروء ' + b.voltage + ' mV (الفرق ' + Math.round(d) + ')',
+        s2 === 'ok' ? '' : 'الفولتية أقل من الطبيعي لهذه النسبة: علامة بطارية ضعيفة أو نسبة غير صادقة (أعد القياس بعد ما تهدأ الشاشة والمعالج).');
+    }
+    if (bd.maxChargeCurrent > 0) setR(P.k + 'bmaxchg', P.n + 'أقصى تيار شحن معلن', 'info', Math.round(bd.maxChargeCurrent / 1000) + ' mA' + (bd.maxChargeVoltage > 0 ? ' @ ' + (bd.maxChargeVoltage / 1e6).toFixed(1) + 'V' : ''));
+    batterySummary(P);
+  }
+
+  function nI(arr) { var m = 0; arr.forEach(function (x) { m = Math.max(m, Math.abs(x)); }); return m > 20000 ? 1000 : 1; }
+  function avg(a) { return a.length ? a.reduce(function (x, y) { return x + y; }, 0) / a.length : 0; }
+  function analyzeLoad(r) {
+    var S = r.samples || [], idle = S.filter(function (x) { return x.phase === 'idle'; }), load = S.filter(function (x) { return x.phase === 'load'; });
+    var all = S.map(function (x) { return x.i; }).filter(function (x) { return typeof x === 'number'; }), sc = nI(all);
+    var o = { unplugged: S.every(function (x) { return !x.plugged; }), ir: null };
+    var steady = load.filter(function (x) { return x.t >= (idle.length ? idle[idle.length - 1].t : 0) + 3000; });
+    if (!steady.length) steady = load;
+    o.idleV = avg(idle.map(function (x) { return x.v; })); o.loadV = avg(steady.map(function (x) { return x.v; }));
+    o.idleI = avg(idle.filter(function (x) { return typeof x.i === 'number'; }).map(function (x) { return Math.abs(x.i) / sc; }));
+    o.loadI = avg(steady.filter(function (x) { return typeof x.i === 'number'; }).map(function (x) { return Math.abs(x.i) / sc; }));
+    o.sag = o.idleV - o.loadV;
+    if (o.unplugged && o.loadI - o.idleI >= 250 && o.sag > 0) o.ir = o.sag / (o.loadI - o.idleI);
+    var temps = S.map(function (x) { return x.temp; }).filter(function (x) { return typeof x === 'number'; });
+    o.tempRise = temps.length ? (Math.max.apply(null, temps) - temps[0]) / 10 : 0; o.tempMax = temps.length ? Math.max.apply(null, temps) / 10 : 0;
+    var bk = (r.buckets || []).slice(1), th = Math.max(1, Math.floor(bk.length / 3));
+    var first = avg(bk.slice(0, th)), last = avg(bk.slice(bk.length - th));
+    o.throttle = first > 0 ? last / first : 1; o.cores = r.cores;
+    return o;
+  }
+  function evalLoad(r, P) {
+    var o = analyzeLoad(r);
+    if (!o.unplugged) setR(P.k + 'bir', P.n + 'مقاومة البطارية (تحت الحمل)', 'info', 'الشاحن كان موصول أثناء الاختبار فما يصير قياس صحيح.', 'افصل الشاحن وأعد الاختبار.');
+    else if (o.ir === null) setR(P.k + 'bir', P.n + 'مقاومة البطارية (تحت الحمل)', 'info', 'الجهاز ما يعطي قراءة تيار كافية لحساب المقاومة. هبوط الفولتية تحت الحمل: ' + Math.round(o.sag) + ' mV', '');
+    else {
+      var st = o.ir > 0.35 || o.sag > 400 ? 'bad' : o.ir > 0.2 || o.sag > 300 ? 'warn' : 'ok', w = st === 'ok' ? 'سليمة' : st === 'warn' ? 'بدأت تضعف' : 'ضعيفة/متهالكة';
+      setR(P.k + 'bir', P.n + 'مقاومة البطارية (تحت الحمل)', st, 'المقاومة ≈ ' + (o.ir * 1000).toFixed(0) + ' mΩ — ' + w + ' | الفولتية نزلت ' + Math.round(o.sag) + ' mV عند تيار ≈ ' + Math.round(o.loadI) + ' mA',
+        st === 'ok' ? '' : 'البطارية ما تتحمل الأحمال: الجهاز ينطفي فجأة أو تنزل النسبة بسرعة؛ الأفضل استبدالها. (القيم الطبيعية للبطارية الجيدة أقل من 200 mΩ)');
+    }
+    var st2 = o.tempMax >= 45 || o.throttle < 0.5 ? 'bad' : o.tempRise >= 6 || o.throttle < 0.75 ? 'warn' : 'ok';
+    setR(P.k + 'cputh', P.n + 'أداء المعالج والحرارة تحت الحمل', st2,
+      'الأنوية ' + (o.cores || '?') + ' | تراجع الأداء ' + Math.max(0, Math.round((1 - o.throttle) * 100)) + '% | ارتفاع حرارة البطارية ' + o.tempRise.toFixed(1) + '°C (الحد ' + o.tempMax.toFixed(1) + ')',
+      st2 === 'ok' ? '' : 'الجهاز يسخن أو يخفّض الأداء بسرعة: نظّف الغبار/الغطاء، وإذا استمر مع بطارية سليمة فالتبريد أو اللوحة فيها مشكلة.');
+    batterySummary(P);
+    return o;
+  }
+
+  function evalCharge(stats, P) {
+    var st = 'ok', fix = '', notes = [];
+    notes.push('النوع: ' + stats.type + (stats.maxCur ? ' (الشاحن معلن ' + Math.round(stats.maxCur) + ' mA)' : ''));
+    notes.push('الحالة: ' + (stats.charging ? 'يشحن' : 'لا يشحن'));
+    if (stats.cur) notes.push('التيار الفعلي ≈ ' + Math.round(stats.cur) + ' mA (' + (stats.cur * stats.v / 1e6).toFixed(1) + ' واط)');
+    if (stats.ccDelta !== null) notes.push('تغيّر عدّاد الشحن ' + (stats.ccDelta >= 0 ? '+' : '') + Math.round(stats.ccDelta / 1000) + ' mAh خلال ' + stats.secs + ' ث');
+    if (!stats.charging) { st = 'bad'; fix = 'يشوف الشاحن بس ما يشحن؛ جرّب كيبل/شاحن ثاني ونظّف منفذ الشحن.'; }
+    else if (stats.cur && stats.cur < 300 && stats.level < 90) { st = 'warn'; fix = 'الشحن بطيء جدًا: كيبل/شاحن ضعيف أو منفذ متّسخ أو دائرة شحن متعبة.'; }
+    else if (stats.ccDelta !== null && stats.ccDelta <= 0 && stats.level < 95) { st = 'warn'; fix = 'يقول يشحن لكن الشحنة ما تزيد فعليًا: الجهاز يستهلك بقدر الشحن أو الشاحن ضعيف.'; }
+    if (stats.maxCur && stats.cur && stats.cur < stats.maxCur * 0.3 && stats.level < 80 && st === 'ok') { st = 'warn'; fix = 'التيار أقل بكثير من قدرة الشاحن: الكيبل أو منفذ الجهاز يحدّ الشحن.'; }
+    if (stats.temp >= 45) { st = 'bad'; fix = 'حرارة عالية أثناء الشحن؛ افصل الشاحن.'; }
+    setR(P.k + 'bchg', P.n + 'قياس الشحن', st, notes.join(' | '), fix);
+    batterySummary(P);
+  }
+
+  function batterySummary(P) {
+    var keys = ['bh', 'cycles', 'bir', 'bcurve', 'bchg', 'battery'], worst = 'ok', bad = [], warn = [], have = 0;
+    var rank = { ok: 0, info: 0, warn: 1, bad: 2 };
+    keys.forEach(function (k) {
+      var r = R.get(P.k + k); if (!r) return; have++;
+      if (rank[r.status] > rank[worst]) worst = r.status;
+      if (r.status === 'bad') bad.push(r.name); else if (r.status === 'warn') warn.push(r.name);
+    });
+    if (!have) return;
+    var verdict = worst === 'bad' ? 'البطارية فيها مشكلة (ضعيفة/تالفة)' : worst === 'warn' ? 'البطارية متوسطة/بدأت تضعف' : 'البطارية سليمة بحسب الفحوصات المتوفرة';
+    setR(P.k + 'bsum', P.n + 'الخلاصة: البطارية', worst, verdict + (bad.length || warn.length ? ' — الأسباب: ' + bad.concat(warn).join('، ') : '') + ' (بُنيت على ' + have + ' فحص)',
+      worst === 'ok' ? 'لحكم أدق: شغّل «صحة البطارية» و«اختبار الحمل» و«قياس الشحن» كلهم.' : 'راجع تفاصيل كل فحص بالأسفل.');
   }
 
   function evalSystem(s, P) {
@@ -281,6 +394,8 @@
             if (g < 7 || g > 12) { st = 'warn'; fix = 'قراءة التسارع غير منطقية (المفروض ≈9.8)؛ ضع الجهاز ثابتًا وأعد الاختبار.'; }
             v += ' (g≈' + g.toFixed(1) + ')';
           }
+          if (t[0] === 4 && r.values.length >= 3) { var gm = Math.max(Math.abs(r.values[0]), Math.abs(r.values[1]), Math.abs(r.values[2])); if (gm > 0.15) { st = 'warn'; fix = 'الجيروسكوب يعطي حركة والجهاز ثابت؛ ثبّت الجهاز على سطح وأعد القياس، وإذا استمر فهو يحتاج معايرة/تالف.'; } }
+          if (t[0] === 2 && r.values.length >= 3) { var mg = Math.sqrt(r.values[0] * r.values[0] + r.values[1] * r.values[1] + r.values[2] * r.values[2]); v += ' (شدة≈' + mg.toFixed(0) + 'µT)'; if (mg < 15 || mg > 90) { st = 'warn'; fix = 'شدة المجال خارج المعتاد (25–65): ابعد عن المغناطيس/المعادن وأعد القياس، أو البوصلة محتاجة معايرة (حرّك الجهاز بشكل 8).'; } }
           setR('t_' + t[1], 'حساس ' + t[2], st, 'قراءة: ' + v, fix); lines.push(t[2] + ': ' + v);
         }
         $('#sres') && ($('#sres').innerHTML = lines.map(esc).join('<br>'));
@@ -351,22 +466,22 @@
   TESTS.chargeTest = async function () {
     autoScreen('قياس الشحن', 'اسحب الشاحن إذا موصول...');
     if (!DD) { amsg('يحتاج نسخة APK الأصلية'); return; }
-    var PL = { 1: 'شاحن جداري AC', 2: 'USB', 4: 'لاسلكي' }, phase = 0, t0 = Date.now(), b0 = null, base = null;
+    var PL = { 1: 'شاحن جداري AC', 2: 'USB', 4: 'لاسلكي' }, phase = 0, t0 = Date.now(), base = null, S = [];
     while (alive() && Date.now() - t0 < 60000) {
       var b; try { b = await DD.getBattery(); } catch (e) { b = null; }
       if (b) {
         if (phase === 0) { if (!b.plugged) { phase = 1; t0 = Date.now(); amsg('الحين وصّل الشاحن بالجهاز (60 ثانية)'); } else amsg('اسحب الشاحن أولًا'); }
-        else if (phase === 1 && b.plugged) { phase = 2; b0 = b; base = Date.now(); amsg('تم اكتشاف الشاحن (' + (PL[b.plugged] || b.plugged) + ')... جاري القياس'); }
+        else if (phase === 1 && b.plugged) { phase = 2; base = Date.now(); S = []; amsg('تم اكتشاف الشاحن (' + (PL[b.plugged] || b.plugged) + ')... جاري القياس 20 ثانية، لا تلمس الجهاز'); }
         else if (phase === 2) {
-          bar(Math.min(100, (Date.now() - base) / 80));
-          if (Date.now() - base > 8000) {
+          S.push(b); bar(Math.min(100, (Date.now() - base) / 200));
+          if (Date.now() - base > 20000) {
             close();
-            var cur = Math.abs(b.currentNow || 0); cur = cur > 20000 ? cur / 1000 : cur;
-            var charging = b.status === 2 || b.status === 5, st = 'ok', fix = '';
-            if (!charging) { st = 'bad'; fix = 'الجهاز يشوف الشاحن بس ما يشحن؛ جرّب كيبل/شاحن ثاني ونظّف منفذ الشحن.'; }
-            else if (cur && cur < 300) { st = 'warn'; fix = 'الشحن بطيء جدًا؛ غالبًا كيبل أو شاحن ضعيف، أو منفذ الشحن متّسخ.'; }
-            if (b.temperature >= 45) { st = 'bad'; fix = 'حرارة عالية أثناء الشحن؛ افصل الشاحن.'; }
-            return setR('t_charge', 'قياس الشحن', st, 'النوع: ' + (PL[b.plugged] || b.plugged) + ' | الحالة: ' + (charging ? 'يشحن' : 'لا يشحن') + (cur ? ' | التيار ≈ ' + Math.round(cur) + ' mA' : '') + ' | الفولتية ' + b0.voltage + '→' + b.voltage + ' mV | الحرارة ' + b.temperature.toFixed(1) + '°C', fix);
+            var cs = S.map(function (x) { return x.currentNow; }).filter(function (x) { return typeof x === 'number'; }), sc = nI(cs), last = S[S.length - 1], first = S[0];
+            var cur = avg(cs.map(function (x) { return Math.abs(x) / sc; }));
+            var ccd = (typeof first.chargeCounter === 'number' && typeof last.chargeCounter === 'number' && first.chargeCounter > 0) ? (last.chargeCounter - first.chargeCounter) * (Math.abs(first.chargeCounter) < 20000 ? 1000 : 1) : null;
+            var bd = null; try { bd = await DD.batteryDeep(); } catch (e) {}
+            return evalCharge({ type: PL[last.plugged] || last.plugged, charging: S.filter(function (x) { return x.status === 2 || x.status === 5; }).length > S.length / 2, cur: cur, v: last.voltage,
+              ccDelta: ccd, secs: Math.round((Date.now() - base) / 1000), level: last.level, temp: last.temperature, maxCur: bd && bd.maxChargeCurrent > 0 ? bd.maxChargeCurrent / 1000 : 0 }, LOCAL);
           }
         }
       }
@@ -376,9 +491,29 @@
     close();
     setR('t_charge', 'قياس الشحن', 'bad', phase === 0 ? 'الشاحن ظل موصول؛ ما تمكن من البدء' : 'ما اكتشف أي شاحن خلال 60 ثانية', 'جرّب كيبل وشاحن ثاني، ونظّف منفذ الشحن بعود خشبي؛ إذا استمر فمنفذ الشحن تالف.');
   };
+  TESTS.batteryDeep = async function () {
+    autoScreen('فحص صحة البطارية', 'جاري قراءة بيانات البطارية من النظام...');
+    if (!DD || !DD.batteryDeep) { amsg('يحتاج نسخة APK الأصلية'); return; }
+    var bd; try { bd = await DD.batteryDeep(); } catch (e) { close(); return setR('bh', 'صحة البطارية', 'info', 'تعذّرت القراءة: ' + (e.message || e)); }
+    bar(100); await sleep(300); if (!alive()) return;
+    close(); evalBattery(bd.battery, LOCAL); evalBatteryDeep(bd, LOCAL);
+  };
+  TESTS.loadTest = async function () {
+    autoScreen('اختبار الحمل (بطارية + معالج)', 'افصل الشاحن! سيشتغل المعالج بأقصى طاقة 20 ثانية لقياس ضعف البطارية والحرارة. لا تقفل الشاشة.');
+    if (!DD || !DD.loadTest) { amsg('يحتاج نسخة APK الأصلية'); return; }
+    var tick = setInterval(function () { var l = $('#lvl'); if (l) l.style.width = Math.min(100, (parseFloat(l.style.width) || 0) + 100 / 27) + '%'; }, 1000);
+    var r; try { r = await DD.loadTest({ seconds: 20 }); } catch (e) { clearInterval(tick); if (alive()) { close(); setR('bir', 'اختبار الحمل', 'warn', 'فشل: ' + (e.message || e)); } return; }
+    clearInterval(tick); if (!alive()) return;
+    close(); evalLoad(r, LOCAL);
+  };
   TESTS.ramTest = async function () {
-    autoScreen('اختبار الرام', 'جاري كتابة وقراءة أنماط على 64 ميغا...');
+    autoScreen('اختبار الرام', 'جاري كتابة وقراءة أنماط على الذاكرة (قد ياخذ حتى نص دقيقة)...');
     await sleep(150);
+    if (DD && DD.ramTest) {
+      try {
+        var r = await DD.ramTest({ mb: 512 }); if (!alive()) return; close(); return evalRam(r, LOCAL);
+      } catch (e) { /* نكمل بالاختبار البديل */ }
+    }
     var pats = [0xAAAAAAAA | 0, 0x55555555, 0xFFFFFFFF | 0, 0], errs = 0, n = 16 * 1024 * 1024, a;
     try { a = new Int32Array(n); } catch (e) { close(); return setR('t_ram', 'اختبار الرام', 'warn', 'ما انحجزت ذاكرة كافية للاختبار', 'أغلق التطبيقات وأعد المحاولة.'); }
     for (var p = 0; p < pats.length && alive(); p++) {
@@ -391,17 +526,26 @@
     close();
     setR('t_ram', 'اختبار الرام', errs ? 'bad' : 'ok', errs ? errs + ' خطأ بالذاكرة' : 'نجح (64 ميغا × 4 أنماط بدون أخطاء). هذا يفحص جزء من الرام فقط', errs ? 'أخطاء بالرام تسبب تعليق وإعادة تشغيل؛ الرام أو اللوحة الأم تالفة.' : '');
   };
+  function evalRam(r, P) {
+    var st = r.errors > 0 ? 'bad' : 'ok';
+    setR(P.k + 't_ram', P.n + 'اختبار الرام', st, (r.errors > 0 ? r.errors + ' خطأ كتابة/قراءة!' : 'نجح بدون أخطاء') + ' | فُحص ' + r.testedMb + ' ميغا بـ5 أنماط (منها اختبار عناوين) | سرعة كتابة ≈ ' + Math.round(r.writeMBs) + ' / قراءة ≈ ' + Math.round(r.readMBs) + ' MB/s',
+      r.errors > 0 ? 'أخطاء بالرام مؤكدة: تسبب تعليق وإعادة تشغيل وانهيار تطبيقات؛ الرام أو اللوحة الأم تالفة (إصلاح بالورشة).' : 'الفحص من داخل أندرويد يغطي جزء من الرام فقط؛ إذا عندك تعليق متكرر فالمشكلة ممكن ببقية الذاكرة أو بالتخزين.');
+    if (r.swapTotalKb > 0) {
+      var u = 100 - r.swapFreeKb * 100 / r.swapTotalKb, s2 = u > 80 ? 'warn' : 'ok';
+      setR(P.k + 'swap', P.n + 'ذاكرة التبديل (Swap/ZRAM)', s2, 'مستخدمة ' + u.toFixed(0) + '% من ' + fmt(r.swapTotalKb * 1024), s2 === 'ok' ? '' : 'الجهاز يعاني ضغط ذاكرة: أغلق التطبيقات الثقيلة؛ إذا دائمًا هيك فالرام قليلة على استخدامك.');
+    }
+    if (r.lowMemory) setR(P.k + 'lowmem', P.n + 'نقص ذاكرة', 'warn', 'النظام معلن أنه بحالة ذاكرة منخفضة وقت الفحص', 'أغلق التطبيقات وأعد الفحص.');
+  }
   TESTS.storageTest = async function () {
     autoScreen('اختبار التخزين', 'جاري كتابة وقراءة 32 ميغا وفحصها...');
     if (!DD || !DD.storageTest) { amsg('يحتاج نسخة APK الأصلية'); return; }
     try {
       var r = await DD.storageTest(); if (!alive()) return; close();
-      var st = !r.ok ? 'bad' : r.writeMBs < 10 ? 'warn' : 'ok';
-      setR('t_storage', 'اختبار التخزين', st, (r.ok ? 'البيانات رجعت سليمة' : 'البيانات رجعت تالفة!') + ' | كتابة ' + r.writeMBs.toFixed(0) + ' MB/s | قراءة ' + r.readMBs.toFixed(0) + ' MB/s (القراءة تقريبية)', !r.ok ? 'التخزين فيه قطاعات تالفة؛ انسخ بياناتك فورًا.' : st === 'warn' ? 'الكتابة بطيئة جدًا؛ التخزين قديم أو ممتلئ.' : '');
+      evalStorageObj(r, LOCAL, 't_storage');
     } catch (e) { if (alive()) { close(); setR('t_storage', 'اختبار التخزين', 'bad', 'فشل الاختبار: ' + (e.message || e), 'خطأ كتابة/قراءة يدل على تخزين معطوب أو ممتلئ.'); } }
   };
 
-  var FULL = ['touch', 'screen', 'backlight', 'camBack', 'camFront', 'flash', 'speaker', 'loud', 'earpiece', 'mic', 'vibrate', 'sensors', 'batteryTest', 'chargeTest', 'ramTest', 'storageTest'];
+  var FULL = ['touch', 'screen', 'backlight', 'camBack', 'camFront', 'flash', 'speaker', 'loud', 'earpiece', 'mic', 'vibrate', 'sensors', 'batteryTest', 'batteryDeep', 'loadTest', 'chargeTest', 'ramTest', 'storageTest'];
   async function fullScan() {
     seq = { list: FULL, i: 0 };
     await quick(true);
@@ -461,7 +605,7 @@
     Array.from(R.keys()).forEach(function (k) { if (k.indexOf('r_') === 0) R.delete(k); });
     st.textContent = '... جاري الفحص' + (isPc ? ' (قد ياخذ دقيقة)' : '');
     var d;
-    try { d = await httpGet(base + (isPc ? '/scan' : '/report') + '?pin=' + encodeURIComponent(pin)); }
+    try { d = await httpGet(base + (isPc ? '/scan' : '/report') + '?pin=' + encodeURIComponent(pin), 300000); }
     catch (e) {
       st.textContent = (e && e.status === 403) ? 'رمز PIN غلط.' : (e && e.status === 429) ? 'الجهاز مشغول بفحص ثاني، حاول بعد شوي.' : 'فشل الفحص أو انقطع الاتصال.';
       btn.disabled = false; return;
@@ -469,17 +613,18 @@
     if (isPc) {
       (d.results || []).forEach(function (x) { setR(P.k + x.group + '_' + x.name, P.n + x.name, x.status, x.details, x.fix); });
     } else {
-      evalBattery(d.battery, P); evalSystem(d.system, P); evalSensors(d.sensors, P); evalStorageObj(d.storage, P);
+      evalBattery(d.battery, P); evalSystem(d.system, P); evalSensors(d.sensors, P); evalStorageObj(d.storage, P); evalBatteryDeep(d.batteryDeep, P);
     }
     st.textContent = 'تم فحص ' + (p.name || 'الجهاز') + '.';
     btn.disabled = false; goReport();
   }
 
 
-  function evalStorageObj(r, P) {
+  function evalStorageObj(r, P, key) {
     if (!r) return;
-    var st = !r.ok ? 'bad' : r.writeMBs < 10 ? 'warn' : 'ok';
-    setR(P.k + 'storage', P.n + 'اختبار التخزين', st, (r.ok ? 'البيانات رجعت سليمة' : 'البيانات رجعت تالفة!') + ' | كتابة ' + r.writeMBs.toFixed(0) + ' MB/s', !r.ok ? 'التخزين فيه قطاعات تالفة؛ انسخ البيانات فورًا.' : st === 'warn' ? 'الكتابة بطيئة جدًا؛ التخزين قديم أو ممتلئ.' : '');
+    var slow = r.syncIops > 0 && r.syncIops < 80, st = !r.ok ? 'bad' : (r.writeMBs < 10 || slow) ? 'warn' : 'ok';
+    setR(P.k + (key || 'storage'), P.n + 'اختبار التخزين', st, (r.ok ? 'البيانات رجعت سليمة' : 'البيانات رجعت تالفة!') + ' | كتابة ' + r.writeMBs.toFixed(0) + ' MB/s' + (r.readMBs ? ' | قراءة ' + r.readMBs.toFixed(0) + ' MB/s (تقريبية)' : '') + (r.syncIops ? ' | كتابة عشوائية 4K ≈ ' + Math.round(r.syncIops) + ' عملية/ث' : ''),
+      !r.ok ? 'التخزين فيه قطاعات تالفة؛ انسخ بياناتك فورًا.' : st === 'warn' ? 'التخزين بطيء (سبب شائع لبطء/تعليق الجهاز): ممتلئ أو قديم أو فيه خلايا متعبة.' : '');
   }
 
   /* ───────── تحويل مخرجات ADB إلى نفس شكل بيانات الفحص ───────── */
@@ -527,6 +672,8 @@
       if (!ex || ex[1] !== '0') out.extra.push(['dd', 'اختبار التخزين', 'warn', 'تعذّر تنفيذ اختبار الكتابة من ADB (قد يكون ممنوعًا)', '']);
       else out.extra.push(['dd', 'اختبار التخزين', !size ? 'bad' : mbs < 8 ? 'warn' : 'ok', (size ? 'كتابة 32 ميغا نجحت' : 'الملف المكتوب حجمه غلط!') + ' | سرعة تقريبية ' + mbs.toFixed(0) + ' MB/s', !size ? 'التخزين تالف أو ممتلئ.' : mbs < 8 ? 'الكتابة بطيئة جدًا.' : '']);
     }
+    var sysfs = {}; String(d.psy || '').split(/\r?\n/).forEach(function (l) { var m = /^(\w+)=(.+)$/.exec(l.trim()); if (m) sysfs[m[1]] = m[2]; });
+    out.batteryDeep = { sysfs: sysfs, battery: out.battery, designMah: -1 };
     out.banner = d.usbName || props['ro.product.model'] || '';
     return out;
   }
@@ -548,7 +695,7 @@
     var p = parseAdb(d);
     var P = { k: 'r_usb_', n: '[موبايل 2' + (p.banner ? ': ' + p.banner : '') + '] ' };
     Array.from(R.keys()).forEach(function (k) { if (k.indexOf('r_') === 0) R.delete(k); });
-    evalBattery(p.battery, P); evalSystem(p.system, P); evalSensors(p.sensors, P);
+    evalBattery(p.battery, P); evalSystem(p.system, P); evalSensors(p.sensors, P); if (p.batteryDeep) evalBatteryDeep(p.batteryDeep, P);
     p.extra.forEach(function (x) { setR(P.k + x[0], P.n + x[1], x[2], x[3], x[4]); });
     st.textContent = 'تم فحص الجهاز الموصل' + (p.banner ? ' (' + p.banner + ')' : '') + '.';
     btn.disabled = false; goReport();
