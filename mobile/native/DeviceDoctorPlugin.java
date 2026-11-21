@@ -33,6 +33,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.RandomAccessFile;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
@@ -42,7 +43,11 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.LongBuffer;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -226,6 +231,21 @@ public class DeviceDoctorPlugin extends Plugin {
             r.put("ok", w.getValue() == rd.getValue() && tot == ((long) mb << 20));
             r.put("writeMBs", mb * 1000.0 / Math.max(1, t1 - t0));
             r.put("readMBs", mb * 1000.0 / Math.max(1, t2 - t1));
+            try {
+                RandomAccessFile raf = new RandomAccessFile(f, "rwd");
+                byte[] b4 = new byte[4096];
+                Random rnd = new Random(7);
+                int n = 300;
+                long t3 = SystemClock.elapsedRealtime();
+                for (int i = 0; i < n; i++) {
+                    raf.seek((long) rnd.nextInt(mb * 256) * 4096L);
+                    raf.write(b4);
+                }
+                raf.close();
+                r.put("syncIops", n * 1000.0 / Math.max(1, SystemClock.elapsedRealtime() - t3));
+            } catch (Exception ignored) {
+                // اختياري
+            }
             return r;
         } finally {
             f.delete();
@@ -286,7 +306,8 @@ public class DeviceDoctorPlugin extends Plugin {
         {"camera", "dumpsys media.camera"},
         {"wm", "wm size; wm density"},
         {"crashes", "logcat -d -b crash -t 500 | grep -c 'FATAL EXCEPTION'"},
-        {"anr", "logcat -d -b main -t 3000 | grep -c 'ANR in'"}
+        {"anr", "logcat -d -b main -t 3000 | grep -c 'ANR in'"},
+        {"psy", "for f in charge_full charge_full_design cycle_count capacity current_now voltage_now temp health technology; do echo $f=$(cat /sys/class/power_supply/battery/$f 2>/dev/null); done"}
     };
 
     @PluginMethod
@@ -355,6 +376,249 @@ public class DeviceDoctorPlugin extends Plugin {
                 }
             }
         }).start();
+    }
+
+    // ───────────── فحص البطارية العميق (قراءات حقيقية من النظام) ─────────────
+    private String readSys(String path) {
+        try {
+            BufferedReader r = new BufferedReader(new InputStreamReader(new java.io.FileInputStream(path)));
+            String l = r.readLine();
+            r.close();
+            return l == null ? "" : l.trim();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private JSObject batteryDeepObj() {
+        JSObject r = new JSObject();
+        JSObject sys = new JSObject();
+        String[] bases = {"/sys/class/power_supply/battery/", "/sys/class/power_supply/bms/"};
+        String[] keys = {"charge_full", "charge_full_design", "charge_counter", "energy_full", "energy_full_design", "capacity",
+                "cycle_count", "battery_cycle", "health", "status", "current_now", "voltage_now", "temp", "technology",
+                "batt_soc", "fg_fullcapnom", "fg_fullcaprep", "batt_cap_max"};
+        for (String b : bases) {
+            for (String k : keys) {
+                String v = readSys(b + k);
+                if (v.length() > 0 && !sys.has(k)) sys.put(k, v);
+            }
+        }
+        r.put("sysfs", sys);
+        double design = -1;
+        try {
+            Class<?> c = Class.forName("com.android.internal.os.PowerProfile");
+            Object pp = c.getConstructor(Context.class).newInstance(getContext());
+            design = (Double) c.getMethod("getBatteryCapacity").invoke(pp);
+        } catch (Throwable ignored) {
+            // API مخفي: قد لا يعمل على بعض الإصدارات
+        }
+        r.put("designMah", design);
+        try {
+            BatteryManager bm = (BatteryManager) getContext().getSystemService(Context.BATTERY_SERVICE);
+            if (Build.VERSION.SDK_INT >= 34) r.put("soh", bm.getIntProperty(10));
+            r.put("currentAvg", bm.getIntProperty(3));
+            r.put("energyCounter", bm.getLongProperty(5));
+        } catch (Throwable ignored) {
+            // غير مدعوم
+        }
+        JSObject b = batteryObj();
+        r.put("battery", b);
+        Intent i = getContext().registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (i != null) {
+            r.put("maxChargeCurrent", i.getIntExtra("max_charging_current", -1));
+            r.put("maxChargeVoltage", i.getIntExtra("max_charging_voltage", -1));
+        }
+        return r;
+    }
+
+    @PluginMethod
+    public void batteryDeep(PluginCall call) {
+        call.resolve(batteryDeepObj());
+    }
+
+    private JSObject sampleBattery(BatteryManager bm, String phase, long t) {
+        JSObject o = new JSObject();
+        Intent i = getContext().registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        o.put("phase", phase);
+        o.put("t", t);
+        if (i != null) {
+            o.put("v", i.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0));
+            o.put("temp", i.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0));
+            o.put("plugged", i.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0));
+        }
+        try {
+            o.put("i", bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW));
+            o.put("cc", bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER));
+        } catch (Throwable ignored) {
+            // بعض الأجهزة لا تدعم
+        }
+        return o;
+    }
+
+    /** اختبار حمل: يقيس هبوط الفولتية والتيار والحرارة وتراجع أداء المعالج. */
+    @PluginMethod
+    public void loadTest(final PluginCall call) {
+        final int secs = Math.max(8, Math.min(40, call.getInt("seconds", 20)));
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    BatteryManager bm = (BatteryManager) getContext().getSystemService(Context.BATTERY_SERVICE);
+                    JSArray samples = new JSArray();
+                    long start = SystemClock.elapsedRealtime();
+                    for (int k = 0; k < 6; k++) {
+                        samples.put(sampleBattery(bm, "idle", SystemClock.elapsedRealtime() - start));
+                        Thread.sleep(500);
+                    }
+                    final long loadStart = SystemClock.elapsedRealtime();
+                    final long[] buckets = new long[secs + 4];
+                    final boolean[] stop = {false};
+                    int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
+                    ArrayList<Thread> ts = new ArrayList<Thread>();
+                    for (int c = 0; c < cores; c++) {
+                        Thread th = new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                double x = 1.0001;
+                                while (!stop[0]) {
+                                    for (int k = 0; k < 20000; k++) {
+                                        x = x * 1.0000001 + Math.sqrt(x);
+                                    }
+                                    if (x > 1e300) x = 1.0001;
+                                    int b = (int) ((SystemClock.elapsedRealtime() - loadStart) / 1000);
+                                    synchronized (buckets) {
+                                        if (b >= 0 && b < buckets.length) buckets[b]++;
+                                    }
+                                }
+                            }
+                        });
+                        th.setDaemon(true);
+                        ts.add(th);
+                        th.start();
+                    }
+                    while (SystemClock.elapsedRealtime() - loadStart < secs * 1000L) {
+                        samples.put(sampleBattery(bm, "load", SystemClock.elapsedRealtime() - start));
+                        Thread.sleep(500);
+                    }
+                    stop[0] = true;
+                    for (Thread th : ts) th.join(2000);
+                    Thread.sleep(300);
+                    samples.put(sampleBattery(bm, "after", SystemClock.elapsedRealtime() - start));
+                    JSArray bk = new JSArray();
+                    synchronized (buckets) {
+                        for (int k = 0; k < secs; k++) bk.put((double) buckets[k]);
+                    }
+                    JSObject r = new JSObject();
+                    r.put("samples", samples);
+                    r.put("buckets", bk);
+                    r.put("cores", cores);
+                    r.put("seconds", secs);
+                    call.resolve(r);
+                } catch (Throwable e) {
+                    call.reject(String.valueOf(e.getMessage()));
+                }
+            }
+        }).start();
+    }
+
+    private long meminfoKb(String key) {
+        try {
+            BufferedReader r = new BufferedReader(new InputStreamReader(new java.io.FileInputStream("/proc/meminfo")));
+            String l;
+            while ((l = r.readLine()) != null) {
+                if (l.startsWith(key + ":")) {
+                    r.close();
+                    return Long.parseLong(l.replaceAll("[^0-9]", ""));
+                }
+            }
+            r.close();
+        } catch (Exception ignored) {
+            // لا شيء
+        }
+        return -1;
+    }
+
+    /** اختبار الرام: كتابة أنماط وقراءتها على ذاكرة native + قياس السرعة. */
+    @PluginMethod
+    public void ramTest(final PluginCall call) {
+        final int reqMb = call.getInt("mb", 512);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    ActivityManager am = (ActivityManager) getContext().getSystemService(Context.ACTIVITY_SERVICE);
+                    ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+                    am.getMemoryInfo(mi);
+                    long availMb = mi.availMem / (1024 * 1024);
+                    int mb = (int) Math.max(64, Math.min(reqMb, availMb * 4 / 10));
+                    ArrayList<LongBuffer> bufs = new ArrayList<LongBuffer>();
+                    int chunk = 32;
+                    try {
+                        for (int got = 0; got + chunk <= mb; got += chunk) {
+                            bufs.add(ByteBuffer.allocateDirect(chunk << 20).order(ByteOrder.nativeOrder()).asLongBuffer());
+                        }
+                    } catch (OutOfMemoryError e) {
+                        // نكمل بما حجزناه
+                    }
+                    long errors = 0;
+                    long[] pats = {0xAAAAAAAAAAAAAAAAL, 0x5555555555555555L, -1L, 0L};
+                    long wNs = 0, rNs = 0, bytes = 0;
+                    for (int p = 0; p <= pats.length; p++) {
+                        long t0 = System.nanoTime();
+                        for (LongBuffer lb : bufs) {
+                            int n = lb.capacity();
+                            if (p < pats.length) {
+                                long v = pats[p];
+                                for (int i = 0; i < n; i++) lb.put(i, v);
+                            } else {
+                                for (int i = 0; i < n; i++) lb.put(i, i * 0x9E3779B97F4A7C15L);
+                            }
+                            bytes += (long) n * 8;
+                        }
+                        long t1 = System.nanoTime();
+                        for (LongBuffer lb : bufs) {
+                            int n = lb.capacity();
+                            if (p < pats.length) {
+                                long v = pats[p];
+                                for (int i = 0; i < n; i++) if (lb.get(i) != v) errors++;
+                            } else {
+                                for (int i = 0; i < n; i++) if (lb.get(i) != i * 0x9E3779B97F4A7C15L) errors++;
+                            }
+                        }
+                        long t2 = System.nanoTime();
+                        wNs += t1 - t0;
+                        rNs += t2 - t1;
+                    }
+                    long testedMb = (long) bufs.size() * chunk;
+                    bufs.clear();
+                    JSObject r = new JSObject();
+                    r.put("testedMb", testedMb);
+                    r.put("errors", errors);
+                    double mbTot = bytes / 1048576.0;
+                    r.put("writeMBs", mbTot * 1e9 / Math.max(1, wNs));
+                    r.put("readMBs", mbTot * 1e9 / Math.max(1, rNs));
+                    r.put("lowMemory", mi.lowMemory);
+                    r.put("swapTotalKb", meminfoKb("SwapTotal"));
+                    r.put("swapFreeKb", meminfoKb("SwapFree"));
+                    r.put("memTotalKb", meminfoKb("MemTotal"));
+                    r.put("memAvailKb", meminfoKb("MemAvailable"));
+                    call.resolve(r);
+                } catch (Throwable e) {
+                    call.reject(String.valueOf(e.getMessage()));
+                }
+            }
+        }).start();
+    }
+
+    @PluginMethod
+    public void features(PluginCall call) {
+        android.content.pm.PackageManager pm = getContext().getPackageManager();
+        String[] f = {"android.hardware.wifi", "android.hardware.bluetooth", "android.hardware.nfc", "android.hardware.location.gps",
+                "android.hardware.fingerprint", "android.hardware.telephony", "android.hardware.camera.flash",
+                "android.hardware.camera.front", "android.hardware.sensor.barometer", "android.hardware.usb.host"};
+        JSObject r = new JSObject();
+        for (String k : f) r.put(k.replace("android.hardware.", ""), pm.hasSystemFeature(k));
+        call.resolve(r);
     }
 
     @PluginMethod
@@ -534,6 +798,11 @@ public class DeviceDoctorPlugin extends Plugin {
                     body.put("battery", batteryObj());
                     body.put("system", systemObj());
                     body.put("sensors", sensorsArr());
+                    try {
+                        body.put("batteryDeep", batteryDeepObj());
+                    } catch (Exception e) {
+                        // اختياري
+                    }
                     try {
                         body.put("storage", storageObj());
                     } catch (Exception e) {
