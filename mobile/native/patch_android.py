@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""يُشغَّل بعد `npx cap add android`: ينسخ البلجن الأصلي ويسجّله ويضيف الصلاحيات."""
 import os
 import re
 import shutil
@@ -9,7 +10,8 @@ PKG_DIR = os.path.join(ANDROID, "app", "src", "main", "java", "com", "devicedoct
 MANIFEST = os.path.join(ANDROID, "app", "src", "main", "AndroidManifest.xml")
 
 os.makedirs(PKG_DIR, exist_ok=True)
-shutil.copy(os.path.join(HERE, "DeviceDoctorPlugin.java"), os.path.join(PKG_DIR, "DeviceDoctorPlugin.java"))
+for _f in ("DeviceDoctorPlugin.java", "AdbClient.java", "UsbAdb.java"):
+    shutil.copy(os.path.join(HERE, _f), os.path.join(PKG_DIR, _f))
 
 with open(os.path.join(PKG_DIR, "MainActivity.java"), "w", encoding="utf-8") as f:
     f.write("""package com.devicedoctor.app;
@@ -36,11 +38,14 @@ extra = """
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 """
 for line in re.findall(r"<uses-permission[^>]*/>|<uses-feature[^>]*/>", extra):
     name = re.search(r'android:name="([^"]+)"', line).group(1)
     if name in m:
         extra = extra.replace(line, "")
+if "usesCleartextTraffic" not in m:
+    m = m.replace("<application", '<application android:usesCleartextTraffic="true"', 1)
 m = m.replace("<application", extra + "\n    <application", 1)
 with open(MANIFEST, "w", encoding="utf-8") as f:
     f.write(m)
