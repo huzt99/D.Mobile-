@@ -12,12 +12,16 @@
 <nav>
   <button class="tab on" data-t="quick">فحص سريع</button>
   <button class="tab" data-t="manual">اختبارات يدوية</button>
+  <button class="tab" data-t="remote">جهاز آخر</button>
+  <button class="tab" data-t="wiz">مساعد الأعطال</button>
   <button class="tab" data-t="report">التقرير</button>
 </nav>
 
 <main>
   <section id="quick" class="pane on">
-    <button class="big" id="runQuick">▶ ابدأ الفحص السريع</button>
+    <button class="big" id="runAll">🧪 الفحص الشامل (كل الاختبارات بالتسلسل)</button>
+    <p class="hint">يفحص: اللمس، الشاشة، إضاءة الشاشة، الكاميرتين، الفلاش، السبيكر الخارجي والداخلي، المايك، الاهتزاز، الحساسات، البطارية، الشحن، الرام، التخزين، الهاردوير والسوفتوير. تقدر تتخطى أي اختبار.</p>
+    <button class="big ghost" id="runQuick">▶ ابدأ الفحص السريع فقط</button>
     <p class="hint">يفحص البطارية والحرارة والتخزين والرام والحساسات والشبكة تلقائيًا.</p>
   </section>
 
@@ -26,13 +30,68 @@
     <div class="grid">
       <button data-test="touch">👆 اللمس</button>
       <button data-test="screen">🖥 الشاشة (ألوان/بكسلات)</button>
-      <button data-test="speaker">🔊 السماعة</button>
+      <button data-test="speaker">🔊 السماعة (يمين/يسار)</button>
       <button data-test="mic">🎤 المايك</button>
       <button data-test="camBack">📷 الكاميرا الخلفية</button>
       <button data-test="camFront">🤳 الكاميرا الأمامية</button>
       <button data-test="vibrate">📳 الاهتزاز</button>
+      <button data-test="loud">🔊 السبيكر الخارجي</button>
+      <button data-test="earpiece">🔈 سماعة الأذن الداخلية</button>
+      <button data-test="backlight">💡 إضاءة الشاشة</button>
+      <button data-test="flash">🔦 فلاش الكاميرا</button>
+      <button data-test="batteryTest">🔋 قياس البطارية</button>
+      <button data-test="chargeTest">⚡ قياس الشحن</button>
+      <button data-test="ramTest">🧠 اختبار الرام</button>
+      <button data-test="storageTest">💾 اختبار التخزين</button>
       <button data-test="sensors">🧭 الحساسات (حركة/إضاءة/قرب)</button>
     </div>
+  </section>
+
+  <section id="remote" class="pane">
+    <h3>🔍 فحص جهاز آخر</h3>
+    <p class="hint">اختر طريقة الاتصال. الفحص يصير على <b>الجهاز الموصل</b> مو على هذا الجهاز، ويطلع نتيجته بالتقرير.</p>
+    <div class="row seg"><button id="mNet" class="on">📶 شبكة (واي فاي / كيبل USB)</button><button id="mUsb" class="ghost">🔌 كيبل OTG مباشر (ADB)</button></div>
+
+    <div id="paneNet">
+      <p class="hint">لازم الجهازين على نفس الشبكة: نفس الواي فاي، أو موصولين بكيبل مع تشغيل «مشاركة الإنترنت عبر USB» (USB tethering) على الجهاز الثاني. على الجهاز الثاني: افتح هذا التطبيق واضغط «تشغيل وضع الاستقبال» (أو على الكمبيوتر DeviceDoctor.exe ثم «وضع الاستقبال»).</p>
+      <button class="big ghost" id="rfind">🔎 بحث تلقائي عن الجهاز</button>
+      <input id="rip" placeholder="عنوان IP مثل 192.168.1.20" inputmode="decimal" dir="ltr">
+      <input id="rpin" placeholder="رمز PIN (4 أرقام)" inputmode="numeric" maxlength="4" dir="ltr">
+      <button class="big" id="rscan">🔎 افحص الجهاز</button>
+    </div>
+
+    <div id="paneUsb" hidden>
+      <p class="hint">وصّل الجهاز الثاني بهذا الجهاز بكيبل OTG (أو كيبل Type-C إلى Type-C). على الجهاز الثاني فعّل <b>تصحيح USB</b>: إعدادات ← حول الهاتف ← اضغط «رقم البنية» 7 مرات ← خيارات المطور ← تصحيح USB. بعدها اضغط الزر ووافق على رسالتين: هنا «السماح بالوصول لجهاز USB»، وعلى الجهاز الثاني «السماح بتصحيح USB» (فعّل «السماح دائمًا»). التطبيق ما يحتاج ينثبّت على الجهاز الثاني.</p>
+      <button class="big" id="rusb">🔌 افحص الجهاز الموصل بالكيبل</button>
+    </div>
+    <p id="rstat" class="hint"></p>
+    <hr>
+    <h3>📡 جعل هذا الجهاز جاهزًا للفحص (وضع الاستقبال)</h3>
+    <p class="hint">استخدمه إذا جهاز ثاني راح يفحص هذا الجهاز عبر الشبكة أو كيبل USB tethering.</p>
+    <button class="big ghost" id="rserve">تشغيل وضع الاستقبال</button>
+    <div id="rinfo" class="card" hidden></div>
+  </section>
+
+  <section id="wiz" class="pane">
+    <h3>🛠 مساعد الأعطال</h3>
+    <p class="hint">للجهاز اللي ما ينهض أو يعلّق: جاوب على الأسئلة وأعطيك السبب الأقرب وشنو تفحص. (إرشاد عام، مو بديل عن الفحص الفعلي)</p>
+    <div id="wq"></div>
+    <div class="row"><button id="wback" class="ghost">⬅ رجوع</button><button id="wreset" class="ghost">من البداية</button></div>
+    <hr>
+    <h3>🔵 كود الشاشة الزرقاء</h3>
+    <input id="bsod" placeholder="مثال: MEMORY_MANAGEMENT أو 0x1A" dir="ltr">
+    <button class="big ghost" id="bsodGo">ابحث عن السبب</button>
+    <div id="bsodOut"></div>
+    <hr>
+    <details class="card"><summary><b>📖 شلون أسوي فلاشة الفحص (للجهاز اللي ما يقلع)؟</b></summary>
+      <div class="d">
+        1) نزّل SystemRescue (ملف ISO) من system-rescue.org.<br>
+        2) من الكمبيوتر الشغّال، استخدم برنامج Rufus: اختر الفلاشة والـISO، «MBR» و«BIOS or UEFI» و«FAT32»، واضغط Start واختر <b>ISO mode</b>.<br>
+        3) انسخ مجلدي <b>autorun</b> و<b>DeviceDoctor</b> من طقم DeviceDoctor-USB إلى جذر الفلاشة.<br>
+        4) على الجهاز الخربان: ادخل قائمة الإقلاع (F12 أو F9 أو Esc حسب الشركة) واختر الفلاشة، ثم أول خيار. الفحص يبدأ لحاله وياخذ دقائق.<br>
+        5) لما يكتب DONE: اكتب <b dir="ltr">sync ; poweroff</b> وطلّع الفلاشة. افتح <b dir="ltr">DeviceDoctor-Reports/latest.html</b> بأي كمبيوتر أو موبايل.
+      </div>
+    </details>
   </section>
 
   <section id="report" class="pane">

@@ -3,8 +3,8 @@
 html,body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,"Segoe UI",Tahoma,sans-serif}
 body{padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
 header{padding:18px 16px 6px}h1{margin:0;font-size:22px}#sub{margin:4px 0 0;color:var(--mut);font-size:13px}
-nav{display:flex;gap:6px;padding:10px 12px;position:sticky;top:0;background:var(--bg);z-index:2}
-.tab{flex:1;padding:10px 4px;border:0;border-radius:10px;background:var(--card);color:var(--mut);font-size:14px}
+nav{display:flex;gap:6px;padding:10px 12px;position:sticky;top:0;background:var(--bg);z-index:2;overflow-x:auto}
+.tab{flex:0 0 auto;white-space:nowrap;padding:10px 12px;border:0;border-radius:10px;background:var(--card);color:var(--mut);font-size:12.5px}
 .tab.on{background:var(--ac);color:#06201c;font-weight:700}
 main{padding:0 12px 24px}.pane{display:none}.pane.on{display:block}
 button{font:inherit;color:var(--tx)}
@@ -29,3 +29,12 @@ textarea{width:100%;height:110px;margin-top:10px;background:var(--card);color:va
 .cell{border:1px solid #333;background:#1b1b1b}.cell.hit{background:#1f9d55}
 video{flex:1;width:100%;object-fit:cover;background:#000;min-height:0}
 .meter{width:80%;height:22px;background:#222;border-radius:11px;overflow:hidden}.meter>i{display:block;height:100%;width:0;background:var(--ac)}
+h3{margin:14px 0 4px;font-size:16px}
+input{width:100%;margin-top:8px;padding:12px;border:1px solid #2a3a4a;border-radius:10px;background:var(--card);color:var(--tx);font-size:16px}
+hr{border:0;border-top:1px solid #2a3a4a;margin:18px 0}
+.big.ghost{background:var(--card);color:var(--tx)}
+.opt{display:block;width:100%;text-align:right;margin:8px 0;padding:14px;border:0;border-radius:12px;background:var(--card);font-size:15px;line-height:1.5}
+details summary{cursor:pointer;list-style:none}details .d{margin-top:8px}
+.card ul{margin:6px 0;padding-inline-start:20px}.card li{margin:3px 0;font-size:14px;line-height:1.6}
+
+.seg{margin:8px 0}.seg button{background:var(--card);color:var(--tx);font-size:13px}.seg button.on{background:var(--ac);color:#06201c}

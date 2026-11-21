@@ -53,25 +53,26 @@
   var HEALTH = { 1: 'غير معروفة', 2: 'جيدة', 3: 'سخونة زائدة', 4: 'تالفة', 5: 'فولتية زائدة', 6: 'عطل غير محدد', 7: 'باردة جدًا' };
   var STYPES = { 1: ['accel', 'مقياس التسارع', 'bad'], 2: ['mag', 'البوصلة', 'warn'], 4: ['gyro', 'الجيروسكوب', 'warn'], 5: ['light', 'حساس الإضاءة', 'warn'], 8: ['prox', 'حساس القرب', 'warn'] };
 
-  async function quick() {
+  async function quick(silent) {
     var btn = $('#runQuick');
     btn.disabled = true; btn.textContent = '... جاري الفحص';
     if (!DD) setR('native', 'الوصول للنظام', 'warn', 'التطبيق يعمل بدون الجزء الأصلي (غالبًا فتحته من المتصفح).', 'ثبّت نسخة APK الأصلية.');
     else {
-      try { await batteryCheck(); } catch (e) { setR('battery', 'البطارية', 'info', 'تعذّرت القراءة'); }
-      try { await systemCheck(); } catch (e) { setR('system', 'النظام', 'info', 'تعذّرت القراءة'); }
-      try { await sensorList(); } catch (e) { setR('sensorlist', 'الحساسات', 'info', 'تعذّرت القراءة'); }
+      try { evalBattery(await DD.getBattery(), LOCAL); } catch (e) { setR('battery', 'البطارية', 'info', 'تعذّرت القراءة'); }
+      try { evalSystem(await DD.getSystem(), LOCAL); } catch (e) { setR('system', 'النظام', 'info', 'تعذّرت القراءة'); }
+      try { evalSensors((await DD.getSensors()).sensors, LOCAL); } catch (e) { setR('sensorlist', 'الحساسات', 'info', 'تعذّرت القراءة'); }
     }
     await networkCheck();
     await mediaCount();
     setR('screen', 'معلومات الشاشة', 'info', screen.width + '×' + screen.height + ' | كثافة ' + (window.devicePixelRatio || 1) + ' | نقاط لمس ' + (navigator.maxTouchPoints || 0));
     btn.disabled = false; btn.textContent = '▶ أعد الفحص السريع';
-    goReport();
+    if (!silent) goReport();
   }
 
-  async function batteryCheck() {
-    var b = await DD.getBattery();
-    if (!b.available) return setR('battery', 'البطارية', 'warn', 'ما تم اكتشاف بطارية');
+  var LOCAL = { k: '', n: '' };
+
+  function evalBattery(b, P) {
+    if (!b || !b.available) return setR(P.k + 'battery', P.n + 'البطارية', 'warn', 'ما تم اكتشاف بطارية');
     var st = 'ok', fix = '';
     if ([3, 4, 5, 6].indexOf(b.health) >= 0) { st = 'bad'; fix = 'البطارية معطوبة أو تسخن؛ افصل الشاحن واستبدلها.'; }
     else if ([1, 7].indexOf(b.health) >= 0) st = 'warn';
@@ -79,42 +80,48 @@
     else if (b.temperature >= 40 && st === 'ok') { st = 'warn'; fix = 'الحرارة مرتفعة نسبيًا.'; }
     if (b.present === false) { st = 'bad'; fix = 'النظام ما يشوف البطارية.'; }
     var d = 'الشحن ' + b.level + '% | الحالة: ' + (HEALTH[b.health] || b.health) + ' | الحرارة ' + b.temperature.toFixed(1) + '°C | الفولتية ' + b.voltage + ' mV' + (b.technology ? ' | ' + b.technology : '');
-    setR('battery', 'البطارية', st, d, fix);
+    setR(P.k + 'battery', P.n + 'البطارية', st, d, fix);
+    if (typeof b.currentNow === 'number' && b.currentNow !== 0) setR(P.k + 'bcur', P.n + 'تيار البطارية', 'info', 'التيار الحالي ≈ ' + Math.round(Math.abs(b.currentNow) / (Math.abs(b.currentNow) > 20000 ? 1000 : 1)) + ' mA (' + (b.currentNow > 0 ? 'يشحن' : 'يستهلك') + ')');
+    if (b.chargeCounter > 0 && b.level > 10) {
+      var cap = Math.round(b.chargeCounter / 1000 * 100 / b.level);
+      setR(P.k + 'bcap', P.n + 'سعة البطارية التقديرية', 'info', 'حوالي ' + cap + ' mAh عند الحالة الحالية (قارنها بالسعة المكتوبة على البطارية؛ إذا أقل من 75% منها فالبطارية ضعيفة)');
+    }
     if (b.cycleCount > 0) {
       var s2 = b.cycleCount > 800 ? 'bad' : b.cycleCount > 500 ? 'warn' : 'ok';
-      setR('cycles', 'دورات الشحن', s2, b.cycleCount + ' دورة', s2 === 'ok' ? '' : 'البطارية قاربت نهاية عمرها.');
-    } else setR('cycles', 'دورات الشحن', 'info', 'هذا الجهاز/الأندرويد لا يكشف عدد الدورات (يتوفر من أندرويد 14).');
+      setR(P.k + 'cycles', P.n + 'دورات الشحن', s2, b.cycleCount + ' دورة', s2 === 'ok' ? '' : 'البطارية قاربت نهاية عمرها.');
+    } else setR(P.k + 'cycles', P.n + 'دورات الشحن', 'info', 'هذا الجهاز/الأندرويد لا يكشف عدد الدورات (يتوفر من أندرويد 14).');
   }
 
-  async function systemCheck() {
-    var s = await DD.getSystem();
-    setR('device', 'معلومات الجهاز', 'info', s.manufacturer + ' ' + s.model + ' | أندرويد ' + s.release + ' | يعمل منذ ' + (s.uptimeMs / 86400000).toFixed(1) + ' يوم');
+  function evalSystem(s, P) {
+    setR(P.k + 'device', P.n + 'معلومات الجهاز', 'info', s.manufacturer + ' ' + s.model + ' | أندرويد ' + s.release + ' | يعمل منذ ' + (s.uptimeMs / 86400000).toFixed(1) + ' يوم');
+    if (s.cores) setR(P.k + 'hw', P.n + 'الهاردوير', 'info', 'معالج ' + (s.hardware || '?') + ' | ' + s.cores + ' أنوية | ' + (s.abi || '') + ' | لوحة ' + (s.board || '?') + (s.dispW ? ' | شاشة ' + s.dispW + '×' + s.dispH + ' @' + s.dpi + 'dpi' : ''));
+    if (s.sdk) setR(P.k + 'sw', P.n + 'السوفتوير', s.sdk < 26 ? 'warn' : 'ok', 'أندرويد ' + s.release + ' (API ' + s.sdk + ')' + (s.uptimeMs > 30 * 86400000 ? ' | ما انعمل له إعادة تشغيل من أكثر من 30 يوم' : ''), s.sdk < 26 ? 'النظام قديم: تطبيقات كثيرة ما تشتغل عليه وبدون ترقيع أمني.' : (s.uptimeMs > 30 * 86400000 ? 'أعد تشغيل الجهاز.' : ''));
     var usedRam = 100 - s.ramAvail * 100 / s.ramTotal;
-    setR('ram', 'الذاكرة RAM', usedRam > 90 ? 'warn' : 'ok', 'الإجمالي ' + fmt(s.ramTotal) + ' | مستخدم ' + usedRam.toFixed(0) + '%', usedRam > 90 ? 'أغلق التطبيقات الثقيلة.' : '');
+    setR(P.k + 'ram', P.n + 'الذاكرة RAM', usedRam > 90 ? 'warn' : 'ok', 'الإجمالي ' + fmt(s.ramTotal) + ' | مستخدم ' + usedRam.toFixed(0) + '%', usedRam > 90 ? 'أغلق التطبيقات الثقيلة.' : '');
     if (s.diskTotal) {
       var freePct = s.diskFree * 100 / s.diskTotal;
       var ds = freePct < 5 ? 'bad' : freePct < 15 ? 'warn' : 'ok';
-      setR('disk', 'التخزين', ds, 'الإجمالي ' + fmt(s.diskTotal) + ' | الفارغ ' + fmt(s.diskFree) + ' (' + freePct.toFixed(0) + '%)', ds === 'ok' ? '' : 'امسح ملفات أو تطبيقات غير مهمة.');
+      setR(P.k + 'disk', P.n + 'التخزين', ds, 'الإجمالي ' + fmt(s.diskTotal) + ' | الفارغ ' + fmt(s.diskFree) + ' (' + freePct.toFixed(0) + '%)', ds === 'ok' ? '' : 'امسح ملفات أو تطبيقات غير مهمة.');
     }
     if (s.thermal >= 0) {
       var ts = s.thermal >= 3 ? 'bad' : s.thermal === 2 ? 'warn' : 'ok';
-      setR('thermal', 'الحرارة العامة', ts, 'المستوى ' + s.thermal + ' (0 طبيعي … 6 طوارئ)', ts === 'ok' ? '' : 'الجهاز يسخن: أغلق التطبيقات وأخرج الغطاء.');
+      setR(P.k + 'thermal', P.n + 'الحرارة العامة', ts, 'المستوى ' + s.thermal + ' (0 طبيعي … 6 طوارئ)', ts === 'ok' ? '' : 'الجهاز يسخن: أغلق التطبيقات وأخرج الغطاء.');
     }
     if (s.patch) {
       var age = (Date.now() - new Date(s.patch).getTime()) / 86400000;
-      if (isFinite(age)) setR('patch', 'تحديث الأمان', age > 365 ? 'warn' : 'ok', 'آخر باتش ' + s.patch, age > 365 ? 'النظام قديم أمنيًا؛ حدّثه إن توفر.' : '');
+      if (isFinite(age)) setR(P.k + 'patch', P.n + 'تحديث الأمان', age > 365 ? 'warn' : 'ok', 'آخر باتش ' + s.patch, age > 365 ? 'النظام قديم أمنيًا؛ حدّثه إن توفر.' : '');
     }
-    if (s.rooted) setR('root', 'صلاحيات Root', 'info', 'الجهاز يبدو مُجذَّرًا (Root).');
+    if (s.rooted) setR(P.k + 'root', P.n + 'صلاحيات Root', 'info', 'الجهاز يبدو مُجذَّرًا (Root).');
   }
 
-  async function sensorList() {
-    var r = await DD.getSensors(), types = {};
-    r.sensors.forEach(function (x) { types[x.type] = true; });
+  function evalSensors(list, P) {
+    var types = {};
+    (list || []).forEach(function (x) { types[x.type] = true; });
     var missing = Object.keys(STYPES).filter(function (t) { return !types[t]; });
-    if (!missing.length) setR('sensorlist', 'الحساسات الأساسية', 'ok', 'كلها موجودة (' + r.sensors.length + ' حساس إجمالًا)');
+    if (!missing.length) setR(P.k + 'sensorlist', P.n + 'الحساسات الأساسية', 'ok', 'كلها موجودة (' + (list || []).length + ' حساس إجمالًا)');
     missing.forEach(function (t) {
       var m = STYPES[t];
-      setR('sens_' + m[0], 'حساس مفقود: ' + m[1], m[2], 'غير ظاهر للنظام', 'إذا الموديل يفترض فيه هذا الحساس فهو معطّل؛ بعض الموبايلات الاقتصادية ما فيها.');
+      setR(P.k + 'sens_' + m[0], P.n + 'حساس مفقود: ' + m[1], m[2], 'غير ظاهر للنظام', 'إذا الموديل يفترض فيه هذا الحساس فهو معطّل؛ بعض الموبايلات الاقتصادية ما فيها.');
     });
   }
 
@@ -142,8 +149,35 @@
 
   /* ───────── الاختبارات اليدوية ───────── */
   var ov = $('#overlay'), cleanup = null;
-  function open(html) { ov.innerHTML = html; ov.hidden = false; return ov; }
-  function close() { if (cleanup) { try { cleanup(); } catch (e) {} cleanup = null; } ov.hidden = true; ov.innerHTML = ''; goReport(); }
+  var seq = null;
+  function open(html) {
+    ov.innerHTML = html; ov.hidden = false;
+    if (seq) {
+      ov.insertAdjacentHTML('beforeend', '<div class="obar"><span>الفحص الشامل: اختبار ' + seq.i + ' من ' + seq.list.length + '</span><button id="skip">تخطي ⏭</button><button id="stopSeq" class="red">إيقاف</button></div>');
+      $('#skip').onclick = function () { close(); };
+      $('#stopSeq').onclick = function () { seq = null; close(); };
+    }
+    return ov;
+  }
+  function close() {
+    if (cleanup) { try { cleanup(); } catch (e) {} cleanup = null; }
+    ov.hidden = true; ov.innerHTML = '';
+    if (seq) setTimeout(seqNext, 60); else goReport();
+  }
+  function seqNext() {
+    if (!seq) return;
+    if (seq.i >= seq.list.length) { seq = null; goReport(); return; }
+    var k = seq.list[seq.i++];
+    try { var r = TESTS[k](); if (r && r.catch) r.catch(function () { close(); }); } catch (e) { close(); }
+  }
+  function autoScreen(title, msg) {
+    open('<div class="center"><div><b>' + title + '</b></div><div id="amsg">' + msg + '</div><div class="meter"><i id="lvl"></i></div></div><div class="obar"><button id="cancel" class="red">إلغاء</button></div>');
+    $('#cancel').onclick = close;
+  }
+  function bar(p) { var l = $('#lvl'); if (l) l.style.width = p + '%'; }
+  function amsg(t) { var m = $('#amsg'); if (m) m.innerHTML = t; }
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  function alive() { return !ov.hidden; }
   function verdict(key, name, okTxt, badTxt, fix) {
     var o = ov;
     o.querySelector('#vOk').onclick = function () { close(); setR(key, name, 'ok', okTxt); };
@@ -254,6 +288,126 @@
     }
   };
 
+
+  /* ───────── اختبارات إضافية: سماعة الأذن، الإضاءة، البطارية، الشحن، الرام، التخزين ───────── */
+  TESTS.earpiece = function () {
+    open('<div class="center"><div>ضع أذنك على سماعة المكالمات (العلوية) واضغط الزر؛ لازم تسمع نغمة من الأعلى فقط<br><small>إذا طلع الصوت من الأسفل أو ما طلع شي فالسماعة فيها مشكلة</small></div><button class="big" id="ep" style="max-width:260px">🔈 شغّل سماعة الأذن</button></div>' + BAR);
+    $('#ep').onclick = async function () {
+      if (!DD || !DD.playTone) { $('#hint').textContent = 'يحتاج نسخة APK الأصلية'; return; }
+      try { await DD.playTone({ route: 'earpiece' }); } catch (e) { $('#hint').textContent = 'تعذّر التشغيل: ' + (e.message || e); }
+    };
+    verdict('t_ear', 'سماعة الأذن (الداخلية)', 'الصوت واضح من السماعة العلوية', 'ما اشتغلت أو الصوت مشوّش', 'نظّف شبكة السماعة العلوية من الغبار؛ إذا استمر فالسماعة تالفة أو فيها كيبل مفصول.');
+  };
+  TESTS.loud = function () {
+    open('<div class="center"><div>اضغط لتشغيل نغمة من السبيكر الخارجي (السفلي) بأعلى صوت، واسمع هل فيه تقطيع أو خشخشة</div><button class="big" id="ls" style="max-width:260px">🔊 شغّل السبيكر الخارجي</button></div>' + BAR);
+    $('#ls').onclick = async function () {
+      if (!DD || !DD.playTone) { $('#hint').textContent = 'يحتاج نسخة APK الأصلية'; return; }
+      try { await DD.playTone({ route: 'speaker' }); } catch (e) { $('#hint').textContent = 'تعذّر التشغيل: ' + (e.message || e); }
+    };
+    verdict('t_loud', 'السبيكر الخارجي', 'صوت قوي وواضح', 'صوت ضعيف/مقطّع/ما يشتغل', 'نظّف الشبكة؛ ارفع الصوت للأقصى؛ إذا استمر فالسبيكر تالف أو دخله ماء.');
+  };
+  TESTS.backlight = function () {
+    var steps = [['#fff', 'أبيض: دوّر على بقع صفراء أو داكنة أو إضاءة غير متساوية'], ['#000', 'أسود (في غرفة معتمة): دوّر على تسريب ضوء من الحواف أو بقع مضيئة'], ['#808080', 'رمادي: دوّر على خطوط أو تموّج أو وميض'], ['#fff', 'قلل السطوع وزوّده من إعدادات الجهاز ولاحظ هل الإضاءة تتغير بسلاسة بدون وميض']], i = 0;
+    open('<div class="full" id="sc"></div>' + BAR);
+    var sc = $('#sc'); sc.style.background = steps[0][0];
+    $('#hint').textContent = steps[0][1] + ' (المس الشاشة للتالي)';
+    sc.onclick = function () { i = (i + 1) % steps.length; sc.style.background = steps[i][0]; $('#hint').textContent = steps[i][1] + ' (المس للتالي)'; };
+    verdict('t_backlight', 'إضاءة الشاشة (Backlight)', 'الإضاءة متساوية بدون وميض أو بقع', 'فيه بقع/تسريب ضوء/وميض/خفوت', 'مشاكل الإضاءة تكون من لوحة الشاشة أو كيبل الإضاءة؛ تحتاج صيانة أو استبدال شاشة.');
+  };
+  TESTS.flash = async function () {
+    open('<div class="center"><div id="fm">جاري فتح الكاميرا الخلفية لتشغيل الفلاش...</div></div>' + BAR);
+    var stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } });
+      cleanup = function () { stream.getTracks().forEach(function (t) { t.stop(); }); };
+      var tr = stream.getVideoTracks()[0], cap = tr.getCapabilities ? tr.getCapabilities() : {};
+      if (!cap.torch) { close(); return setR('t_flash', 'فلاش الكاميرا', 'info', 'هذا الجهاز/المتصفح لا يسمح بالتحكم بالفلاش من التطبيق. جرّبه من تطبيق الكاميرا أو الكشاف.'); }
+      await tr.applyConstraints({ advanced: [{ torch: true }] });
+      $('#fm').textContent = 'الفلاش يجب أن يكون مضاءً الآن';
+      verdict('t_flash', 'فلاش الكاميرا', 'اشتغل', 'ما اشتغل', 'جرّب الكشاف من القائمة؛ إذا ما اشتغل فاللمبة أو دائرتها تالفة.');
+    } catch (e) { close(); setR('t_flash', 'فلاش الكاميرا', 'warn', 'تعذّر تشغيل الفلاش: ' + (e.name || e), 'امنح إذن الكاميرا أو جرّب الكشاف.'); }
+  };
+  TESTS.batteryTest = async function () {
+    autoScreen('قياس البطارية', 'جاري أخذ قراءات لمدة 10 ثواني...');
+    if (!DD) { amsg('يحتاج نسخة APK الأصلية'); return; }
+    var vs = [], cs = [], t = [], last = null;
+    for (var i = 0; i < 10 && alive(); i++) {
+      try { last = await DD.getBattery(); vs.push(last.voltage); t.push(last.temperature); if (typeof last.currentNow === 'number') cs.push(last.currentNow); } catch (e) {}
+      bar((i + 1) * 10); await sleep(1000);
+    }
+    if (!alive()) return;
+    close();
+    if (!last || !last.available) return setR('t_battery', 'قياس البطارية', 'bad', 'ما انقرأت أي قراءة من البطارية', 'البطارية غير موصولة أو دائرة الشحن فيها عطل.');
+    var vmin = Math.min.apply(null, vs), vmax = Math.max.apply(null, vs), st = 'ok', fix = '', notes = [];
+    if (vmax < 3000 || vmax > 4600) { st = 'bad'; fix = 'فولتية غير منطقية؛ البطارية أو دائرة القياس تالفة.'; }
+    else if (vmax - vmin > 150) { st = 'warn'; fix = 'الفولتية تتذبذب بشدة؛ علامة بطارية ضعيفة أو تلامس سيئ.'; }
+    if (last.level > 30 && vmax < 3500) { st = 'bad'; fix = 'النسبة تقول ' + last.level + '% بس الفولتية واطئة؛ البطارية منتفخة/ضعيفة والنسبة غير صادقة.'; }
+    if (Math.max.apply(null, t) >= 45) { st = 'bad'; fix = 'حرارة عالية بدون حمل؛ اطفِ الجهاز وافحص البطارية.'; }
+    notes.push('الفولتية ' + vmin + '–' + vmax + ' mV', 'الحرارة ' + last.temperature.toFixed(1) + '°C', 'النسبة ' + last.level + '%');
+    if (cs.length) notes.push('التيار ≈ ' + Math.round(cs.reduce(function (a, b) { return a + Math.abs(b); }, 0) / cs.length / (Math.abs(cs[0]) > 20000 ? 1000 : 1)) + ' mA');
+    setR('t_battery', 'قياس البطارية', st, notes.join(' | '), fix);
+    evalBattery(last, LOCAL);
+  };
+  TESTS.chargeTest = async function () {
+    autoScreen('قياس الشحن', 'اسحب الشاحن إذا موصول...');
+    if (!DD) { amsg('يحتاج نسخة APK الأصلية'); return; }
+    var PL = { 1: 'شاحن جداري AC', 2: 'USB', 4: 'لاسلكي' }, phase = 0, t0 = Date.now(), b0 = null, base = null;
+    while (alive() && Date.now() - t0 < 60000) {
+      var b; try { b = await DD.getBattery(); } catch (e) { b = null; }
+      if (b) {
+        if (phase === 0) { if (!b.plugged) { phase = 1; t0 = Date.now(); amsg('الحين وصّل الشاحن بالجهاز (60 ثانية)'); } else amsg('اسحب الشاحن أولًا'); }
+        else if (phase === 1 && b.plugged) { phase = 2; b0 = b; base = Date.now(); amsg('تم اكتشاف الشاحن (' + (PL[b.plugged] || b.plugged) + ')... جاري القياس'); }
+        else if (phase === 2) {
+          bar(Math.min(100, (Date.now() - base) / 80));
+          if (Date.now() - base > 8000) {
+            close();
+            var cur = Math.abs(b.currentNow || 0); cur = cur > 20000 ? cur / 1000 : cur;
+            var charging = b.status === 2 || b.status === 5, st = 'ok', fix = '';
+            if (!charging) { st = 'bad'; fix = 'الجهاز يشوف الشاحن بس ما يشحن؛ جرّب كيبل/شاحن ثاني ونظّف منفذ الشحن.'; }
+            else if (cur && cur < 300) { st = 'warn'; fix = 'الشحن بطيء جدًا؛ غالبًا كيبل أو شاحن ضعيف، أو منفذ الشحن متّسخ.'; }
+            if (b.temperature >= 45) { st = 'bad'; fix = 'حرارة عالية أثناء الشحن؛ افصل الشاحن.'; }
+            return setR('t_charge', 'قياس الشحن', st, 'النوع: ' + (PL[b.plugged] || b.plugged) + ' | الحالة: ' + (charging ? 'يشحن' : 'لا يشحن') + (cur ? ' | التيار ≈ ' + Math.round(cur) + ' mA' : '') + ' | الفولتية ' + b0.voltage + '→' + b.voltage + ' mV | الحرارة ' + b.temperature.toFixed(1) + '°C', fix);
+          }
+        }
+      }
+      await sleep(700);
+    }
+    if (!alive()) return;
+    close();
+    setR('t_charge', 'قياس الشحن', 'bad', phase === 0 ? 'الشاحن ظل موصول؛ ما تمكن من البدء' : 'ما اكتشف أي شاحن خلال 60 ثانية', 'جرّب كيبل وشاحن ثاني، ونظّف منفذ الشحن بعود خشبي؛ إذا استمر فمنفذ الشحن تالف.');
+  };
+  TESTS.ramTest = async function () {
+    autoScreen('اختبار الرام', 'جاري كتابة وقراءة أنماط على 64 ميغا...');
+    await sleep(150);
+    var pats = [0xAAAAAAAA | 0, 0x55555555, 0xFFFFFFFF | 0, 0], errs = 0, n = 16 * 1024 * 1024, a;
+    try { a = new Int32Array(n); } catch (e) { close(); return setR('t_ram', 'اختبار الرام', 'warn', 'ما انحجزت ذاكرة كافية للاختبار', 'أغلق التطبيقات وأعد المحاولة.'); }
+    for (var p = 0; p < pats.length && alive(); p++) {
+      var v = pats[p]; a.fill(v);
+      for (var i = 0; i < n; i++) if (a[i] !== v) errs++;
+      bar((p + 1) * 25); await sleep(30);
+    }
+    a = null;
+    if (!alive()) return;
+    close();
+    setR('t_ram', 'اختبار الرام', errs ? 'bad' : 'ok', errs ? errs + ' خطأ بالذاكرة' : 'نجح (64 ميغا × 4 أنماط بدون أخطاء). هذا يفحص جزء من الرام فقط', errs ? 'أخطاء بالرام تسبب تعليق وإعادة تشغيل؛ الرام أو اللوحة الأم تالفة.' : '');
+  };
+  TESTS.storageTest = async function () {
+    autoScreen('اختبار التخزين', 'جاري كتابة وقراءة 32 ميغا وفحصها...');
+    if (!DD || !DD.storageTest) { amsg('يحتاج نسخة APK الأصلية'); return; }
+    try {
+      var r = await DD.storageTest(); if (!alive()) return; close();
+      var st = !r.ok ? 'bad' : r.writeMBs < 10 ? 'warn' : 'ok';
+      setR('t_storage', 'اختبار التخزين', st, (r.ok ? 'البيانات رجعت سليمة' : 'البيانات رجعت تالفة!') + ' | كتابة ' + r.writeMBs.toFixed(0) + ' MB/s | قراءة ' + r.readMBs.toFixed(0) + ' MB/s (القراءة تقريبية)', !r.ok ? 'التخزين فيه قطاعات تالفة؛ انسخ بياناتك فورًا.' : st === 'warn' ? 'الكتابة بطيئة جدًا؛ التخزين قديم أو ممتلئ.' : '');
+    } catch (e) { if (alive()) { close(); setR('t_storage', 'اختبار التخزين', 'bad', 'فشل الاختبار: ' + (e.message || e), 'خطأ كتابة/قراءة يدل على تخزين معطوب أو ممتلئ.'); } }
+  };
+
+  var FULL = ['touch', 'screen', 'backlight', 'camBack', 'camFront', 'flash', 'speaker', 'loud', 'earpiece', 'mic', 'vibrate', 'sensors', 'batteryTest', 'chargeTest', 'ramTest', 'storageTest'];
+  async function fullScan() {
+    seq = { list: FULL, i: 0 };
+    await quick(true);
+    seqNext();
+  }
+
   function camTest(facing, label) {
     return async function () {
       open('<video id="vid" autoplay playsinline muted></video>' + BAR);
@@ -273,6 +427,306 @@
   TESTS.camBack = camTest('environment', 'الكاميرا الخلفية');
   TESTS.camFront = camTest('user', 'الكاميرا الأمامية');
 
+
+  /* ───────── فحص جهاز آخر عبر الواي فاي ───────── */
+  var HTTP = null;
+  try { HTTP = window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.CapacitorHttp || null; } catch (e) {}
+  async function httpGet(url, timeout, ctimeout) {
+    if (HTTP) {
+      var r = await HTTP.get({ url: url, connectTimeout: ctimeout || 6000, readTimeout: timeout || 130000 });
+      var d = r.data;
+      if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = {}; } }
+      if (r.status >= 400) throw { status: r.status, data: d };
+      return d;
+    }
+    var ctl = new AbortController(), t = setTimeout(function () { ctl.abort(); }, timeout || 130000);
+    var rs = await fetch(url, { signal: ctl.signal });
+    clearTimeout(t);
+    if (!rs.ok) throw { status: rs.status };
+    return rs.json();
+  }
+
+  async function remoteScan() {
+    var ip = $('#rip').value.trim(), pin = $('#rpin').value.trim(), st = $('#rstat'), btn = $('#rscan');
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { st.textContent = 'اكتب عنوان IP صحيح مثل 192.168.1.20'; return; }
+    var base = 'http://' + ip + ':8765', p;
+    btn.disabled = true; st.textContent = '... جاري الاتصال';
+    try { p = await httpGet(base + '/ping', 8000); }
+    catch (e) {
+      st.textContent = 'ما اتصل. تأكد أن الجهازين على نفس الواي فاي، وأن «وضع الاستقبال» شغال هناك، وأن Firewall يسمح (على الكمبيوتر).';
+      btn.disabled = false; return;
+    }
+    var isPc = p.type === 'pc';
+    var P = { k: 'r_' + p.type + '_', n: '[' + (isPc ? 'كمبيوتر' : 'موبايل 2') + (p.name ? ': ' + p.name : '') + '] ' };
+    Array.from(R.keys()).forEach(function (k) { if (k.indexOf('r_') === 0) R.delete(k); });
+    st.textContent = '... جاري الفحص' + (isPc ? ' (قد ياخذ دقيقة)' : '');
+    var d;
+    try { d = await httpGet(base + (isPc ? '/scan' : '/report') + '?pin=' + encodeURIComponent(pin)); }
+    catch (e) {
+      st.textContent = (e && e.status === 403) ? 'رمز PIN غلط.' : (e && e.status === 429) ? 'الجهاز مشغول بفحص ثاني، حاول بعد شوي.' : 'فشل الفحص أو انقطع الاتصال.';
+      btn.disabled = false; return;
+    }
+    if (isPc) {
+      (d.results || []).forEach(function (x) { setR(P.k + x.group + '_' + x.name, P.n + x.name, x.status, x.details, x.fix); });
+    } else {
+      evalBattery(d.battery, P); evalSystem(d.system, P); evalSensors(d.sensors, P); evalStorageObj(d.storage, P);
+    }
+    st.textContent = 'تم فحص ' + (p.name || 'الجهاز') + '.';
+    btn.disabled = false; goReport();
+  }
+
+
+  function evalStorageObj(r, P) {
+    if (!r) return;
+    var st = !r.ok ? 'bad' : r.writeMBs < 10 ? 'warn' : 'ok';
+    setR(P.k + 'storage', P.n + 'اختبار التخزين', st, (r.ok ? 'البيانات رجعت سليمة' : 'البيانات رجعت تالفة!') + ' | كتابة ' + r.writeMBs.toFixed(0) + ' MB/s', !r.ok ? 'التخزين فيه قطاعات تالفة؛ انسخ البيانات فورًا.' : st === 'warn' ? 'الكتابة بطيئة جدًا؛ التخزين قديم أو ممتلئ.' : '');
+  }
+
+  /* ───────── تحويل مخرجات ADB إلى نفس شكل بيانات الفحص ───────── */
+  function kv(text, key) {
+    var m = new RegExp('^\\s*' + key + ':\\s*(.+?)\\s*$', 'im').exec(text || '');
+    return m ? m[1] : null;
+  }
+  function parseAdb(d) {
+    var out = { extra: [] }, props = {}, m, re = /\[([^\]]+)\]: \[([^\]]*)\]/g;
+    while ((m = re.exec(d.props || ''))) props[m[1]] = m[2];
+    var bt = d.battery || '', lvl = parseInt(kv(bt, 'level'), 10), scale = parseInt(kv(bt, 'scale'), 10) || 100;
+    var present = kv(bt, 'present');
+    if (isFinite(lvl)) {
+      out.battery = {
+        available: true, level: Math.round(lvl * 100 / scale), temperature: (parseInt(kv(bt, 'temperature'), 10) || 0) / 10,
+        voltage: parseInt(kv(bt, 'voltage'), 10) || 0, health: parseInt(kv(bt, 'health'), 10) || 1, status: parseInt(kv(bt, 'status'), 10) || 1,
+        plugged: /AC powered:\s*true/i.test(bt) ? 1 : /USB powered:\s*true/i.test(bt) ? 2 : /Wireless powered:\s*true/i.test(bt) ? 4 : 0,
+        present: present === null ? true : present === 'true', technology: kv(bt, 'technology') || '',
+        cycleCount: parseInt(kv(bt, 'Cycle count'), 10) || -1, chargeCounter: parseInt(kv(bt, 'Charge counter'), 10) || 0
+      };
+    } else out.battery = { available: false };
+    var mt = /MemTotal:\s*(\d+)/.exec(d.mem || ''), ma = /MemAvailable:\s*(\d+)/.exec(d.mem || '');
+    var df = /(\d+)\s+(\d+)\s+(\d+)\s+\d+%/.exec(d.df || '');
+    var up = parseFloat(String(d.uptime || '').split(/\s+/)[0]);
+    var sz = /Physical size:\s*(\d+)x(\d+)/.exec(d.wm || ''), dn = /Physical density:\s*(\d+)/.exec(d.wm || '');
+    var th = /thermal status:?\s*(\d+)/i.exec(d.thermal || '');
+    out.system = {
+      ramTotal: mt ? +mt[1] * 1024 : 0, ramAvail: ma ? +ma[1] * 1024 : 0, diskTotal: df ? +df[1] * 1024 : 0, diskFree: df ? +df[3] * 1024 : 0,
+      uptimeMs: isFinite(up) ? up * 1000 : 0, sdk: parseInt(props['ro.build.version.sdk'], 10) || 0, release: props['ro.build.version.release'] || '',
+      model: props['ro.product.model'] || '', manufacturer: props['ro.product.manufacturer'] || '', patch: props['ro.build.version.security_patch'] || '',
+      thermal: th ? +th[1] : -1, rooted: false, cores: parseInt(d.cpu, 10) || 0, hardware: props['ro.hardware'] || '', board: props['ro.product.board'] || '',
+      abi: props['ro.product.cpu.abi'] || '', dispW: sz ? +sz[1] : 0, dispH: sz ? +sz[2] : 0, dpi: dn ? +dn[1] : 0
+    };
+    if (!out.system.ramTotal) out.system.ramTotal = 1, out.system.ramAvail = 1;
+    var low = String(d.sensors || '').toLowerCase().split(/recent sensor events/)[0], list = [];
+    [[1, /accelerometer/], [2, /magnetic/], [4, /gyroscope/], [5, /android\.sensor\.light|\blight\b/], [8, /proximity/]].forEach(function (t) { if (t[1].test(low)) list.push({ type: t[0] }); });
+    out.sensors = list;
+    var cam = /Number of camera devices:\s*(\d+)/i.exec(d.camera || '');
+    if (cam) out.extra.push(['cam', 'عدد الكاميرات', +cam[1] === 0 ? 'bad' : 'info', cam[1] + ' كاميرا ظاهرة للنظام', +cam[1] === 0 ? 'النظام ما يشوف أي كاميرا؛ الكاميرا أو كيبلها تالف.' : '']);
+    var cr = parseInt(String(d.crashes || '').trim(), 10), an = parseInt(String(d.anr || '').trim(), 10);
+    if (isFinite(cr)) out.extra.push(['crash', 'انهيارات التطبيقات (logcat)', cr > 10 ? 'warn' : 'ok', cr + ' انهيار بالسجل الأخير', cr > 10 ? 'انهيارات كثيرة: ذاكرة ضعيفة أو تطبيقات معطوبة أو تخزين فيه مشاكل.' : '']);
+    if (isFinite(an)) out.extra.push(['anr', 'تعليق التطبيقات (ANR)', an > 5 ? 'warn' : 'ok', an + ' مرة', an > 5 ? 'تعليق متكرر: الجهاز بطيء أو تخزين/رام ضعيف.' : '']);
+    if (d.dd) {
+      var ex = /EXIT=(\d+)/.exec(d.dd), size = /\b33554432\b/.test(d.dd), mbs = d.ddMs ? 32000 / d.ddMs : 0;
+      if (!ex || ex[1] !== '0') out.extra.push(['dd', 'اختبار التخزين', 'warn', 'تعذّر تنفيذ اختبار الكتابة من ADB (قد يكون ممنوعًا)', '']);
+      else out.extra.push(['dd', 'اختبار التخزين', !size ? 'bad' : mbs < 8 ? 'warn' : 'ok', (size ? 'كتابة 32 ميغا نجحت' : 'الملف المكتوب حجمه غلط!') + ' | سرعة تقريبية ' + mbs.toFixed(0) + ' MB/s', !size ? 'التخزين تالف أو ممتلئ.' : mbs < 8 ? 'الكتابة بطيئة جدًا.' : '']);
+    }
+    out.banner = d.usbName || props['ro.product.model'] || '';
+    return out;
+  }
+
+  async function usbScan() {
+    var st = $('#rstat'), btn = $('#rusb');
+    if (!DD || !DD.adbUsbScan) { st.textContent = 'هذي الميزة تحتاج نسخة APK الأصلية.'; return; }
+    btn.disabled = true; st.textContent = '... جاري البحث عن الجهاز الموصل. وافق على الرسائل اللي تظهر هنا وعلى الجهاز الثاني (ممكن ياخذ دقيقة)';
+    var d;
+    try { d = await DD.adbUsbScan(); }
+    catch (e) {
+      var msg = String((e && e.message) || e);
+      st.textContent = msg === 'no_device' ? 'ما لقيت جهاز موصول. وصّله بكيبل OTG، وفعّل تصحيح USB عليه، وتأكد أن الكيبل يدعم نقل البيانات (مو شحن فقط).'
+        : msg === 'no_permission' ? 'ما انمنح إذن الوصول لمنفذ USB. أعد المحاولة ووافق على الرسالة.'
+        : msg.indexOf('auth') === 0 ? 'الجهاز الثاني ما وافق على تصحيح USB. أعد المحاولة ووافق على الرسالة اللي تطلع عليه (فعّل «السماح دائمًا»).'
+        : 'فشل الاتصال بالجهاز: ' + msg;
+      btn.disabled = false; return;
+    }
+    var p = parseAdb(d);
+    var P = { k: 'r_usb_', n: '[موبايل 2' + (p.banner ? ': ' + p.banner : '') + '] ' };
+    Array.from(R.keys()).forEach(function (k) { if (k.indexOf('r_') === 0) R.delete(k); });
+    evalBattery(p.battery, P); evalSystem(p.system, P); evalSensors(p.sensors, P);
+    p.extra.forEach(function (x) { setR(P.k + x[0], P.n + x[1], x[2], x[3], x[4]); });
+    st.textContent = 'تم فحص الجهاز الموصل' + (p.banner ? ' (' + p.banner + ')' : '') + '.';
+    btn.disabled = false; goReport();
+  }
+
+  async function discover() {
+    var st = $('#rstat'), btn = $('#rfind');
+    if (!DD || !DD.localIps) { st.textContent = 'البحث التلقائي يحتاج نسخة APK الأصلية. اكتب الـIP يدويًا.'; return; }
+    btn.disabled = true; st.textContent = '... جاري البحث على الشبكة';
+    var ips = []; try { ips = (await DD.localIps()).ips || []; } catch (e) {}
+    var cands = [], seen = {}, mine = {};
+    ips.forEach(function (x) { mine[x.ip] = 1; });
+    ips.forEach(function (x) {
+      var b = x.ip.split('.').slice(0, 3).join('.');
+      [1, 129].concat(Array.from({ length: 254 }, function (_, i) { return i + 1; })).forEach(function (h) {
+        var ip = b + '.' + h; if (!seen[ip] && !mine[ip]) { seen[ip] = 1; cands.push(ip); }
+      });
+    });
+    var found = null;
+    for (var i = 0; i < cands.length && !found; i += 40) {
+      var batch = cands.slice(i, i + 40);
+      var res = await Promise.all(batch.map(function (ip) { return httpGet('http://' + ip + ':8765/ping', 900, 700).then(function (p) { return { ip: ip, p: p }; }, function () { return null; }); }));
+      found = res.filter(Boolean)[0] || null;
+    }
+    btn.disabled = false;
+    if (found) { $('#rip').value = found.ip; st.textContent = 'لقيت: ' + found.ip + (found.p && found.p.name ? ' (' + found.p.name + ')' : '') + '. اكتب الـPIN واضغط افحص.'; }
+    else st.textContent = 'ما لقيت جهاز. تأكد أن وضع الاستقبال شغال هناك وأن الجهازين على نفس الشبكة (أو أن USB tethering مفعّل).';
+  }
+
+  function setMethod(usb) {
+    $('#paneNet').hidden = usb; $('#paneUsb').hidden = !usb;
+    $('#mNet').className = usb ? 'ghost' : 'on'; $('#mUsb').className = usb ? 'on' : 'ghost';
+    $('#rstat').textContent = '';
+  }
+  $('#mNet').onclick = function () { setMethod(false); };
+  $('#mUsb').onclick = function () { setMethod(true); };
+  $('#rusb').onclick = usbScan;
+  $('#rfind').onclick = discover;
+
+  var serving = false;
+  async function toggleServe() {
+    var b = $('#rserve'), info = $('#rinfo');
+    if (!DD) { info.hidden = false; info.innerHTML = '<div class="d">هذي الميزة تحتاج نسخة APK الأصلية.</div>'; return; }
+    try {
+      if (serving) {
+        await DD.stopServer(); serving = false; b.textContent = 'تشغيل وضع الاستقبال'; info.hidden = true; return;
+      }
+      var r = await DD.startServer({ port: 8765 });
+      serving = true; b.textContent = 'إيقاف وضع الاستقبال'; info.hidden = false;
+      info.innerHTML = '<b>✔ جاهز للفحص</b><div class="d" dir="ltr" style="text-align:right">IP: ' + esc(r.ip || '؟') + '<br>PIN: ' + esc(r.pin) + '</div><div class="f">خلّ التطبيق مفتوح والشاشة شغالة، والجهازين على نفس الواي فاي.</div>';
+    } catch (e) {
+      info.hidden = false; info.innerHTML = '<div class="d">تعذّر التشغيل: ' + esc((e && e.message) || e) + '</div>';
+    }
+  }
+  $('#rscan').onclick = remoteScan;
+  $('#rserve').onclick = toggleServe;
+
+
+  /* ───────── مساعد الأعطال ───────── */
+  var USBTIP = 'افحص بفلاشة الفحص (الدليل أعلاه): تكشف حالة القرص والرام والحرارة وسبب الشاشة الزرقاء وملفات إقلاع ويندوز بدون ما يقلع الجهاز.';
+  var WIZ = {
+    start: { q: 'شنو حالة الجهاز؟', o: [
+      ['ما يشتغل أبدًا (لا مراوح ولا لمبات)', 'dead'], ['يشتغل (مراوح/لمبات) بس الشاشة سوداء', 'black'],
+      ['يطلّع صوت بيب', 'beep'], ['يوقف عند شعار الشركة أو يطلع رسالة خطأ', 'boot'],
+      ['يدخل ويندوز بس يعلّق / ريستارت / شاشة زرقاء', 'win'], ['يطفي لحاله أو يسخن', 'hot'], ['لابتوب ما يشحن', 'charge']] },
+    dead: { q: 'لما تضغط زر التشغيل، شنو يصير؟', o: [['ولا شي أبدًا', 'dead2'], ['يشتغل ثانية ثم ينطفي', 'r_short'], ['لمبة صغيرة تضوي بس ما يقلع', 'r_standby']] },
+    dead2: { q: 'جرّب كيبل ومقبس كهرباء ثاني، وتأكد من مفتاح الباور خلف الجهاز. صار يشتغل؟', o: [['إي اشتغل', 'r_cable'], ['نفس الشي', 'dead3']] },
+    dead3: { q: 'نوع الجهاز؟', o: [['كمبيوتر مكتبي', 'r_psu'], ['لابتوب', 'r_lap_dead']] },
+    black: { q: 'هل يطلّع صوت بيب عند التشغيل؟', o: [['إي يبيّب', 'beep'], ['لا', 'black2']] },
+    black2: { q: 'جرّب شاشة أو كيبل ثاني (HDMI/DP). ظهرت صورة؟', o: [['إي ظهرت', 'r_display'], ['لا', 'black3']] },
+    black3: { q: 'الجهاز عنده كرت شاشة منفصل؟', o: [['إي كرت منفصل', 'r_gpu'], ['لا / لابتوب', 'r_ram']] },
+    beep: { q: 'شلون شكل البيب؟', o: [['بيب قصير واحد ثم يقلع طبيعي', 'r_beep_ok'], ['بيب طويل متكرر', 'r_ram'],
+      ['بيب طويل + 2 أو 3 قصير', 'r_gpu'], ['بيب سريع متواصل', 'r_beep_hot'], ['بيب قصير متكرر', 'r_psu']] },
+    boot: { q: 'شنو يظهر بالضبط؟', o: [
+      ['No bootable device / Boot device not found / Operating system not found', 'r_nodisk'],
+      ['شعار الشركة ويعلّق أو يدور دائمًا', 'r_logo'], ['CMOS error / CMOS checksum / Date and time not set', 'r_cmos'],
+      ['Preparing Automatic Repair أو Startup Repair يتكرر', 'r_repair']] },
+    win: { q: 'شنو يصير بالضبط؟', o: [['شاشة زرقاء (BSOD)', 'bsod'], ['ريستارت لحاله', 'hot'], ['يعلّق أو بطيء جدًا', 'r_slow']] },
+    bsod: { q: 'سجّل الكود أو الاسم اللي يظهر بالشاشة الزرقاء (مثل MEMORY_MANAGEMENT أو 0x1A) واكتبه بخانة «كود الشاشة الزرقاء» بالأسفل. ما تعرف الكود؟', o: [['ما أعرفه / تختفي بسرعة', 'r_bsod_unknown']] },
+    hot: { q: 'متى ينطفي؟', o: [['بعد دقائق من التشغيل أو وقت الضغط/لعبة', 'r_heat'], ['عشوائي بدون سبب واضح', 'r_random']] },
+    charge: { q: 'جرّب شاحن ثاني بنفس المواصفات. شحن؟', o: [['إي', 'r_charger'], ['لا', 'r_chport']] }
+  };
+  var WRES = {
+    r_short: { t: 'يشتغل ثانية وينطفي', c: ['حماية الباور سبلاي (قصر أو حمل زايد)', 'رام أو كرت شاشة مو مثبّت زين', 'قصر في اللوحة الأم'],
+      s: ['فصّل كل شي ما عدا المعالج وشريحة رام وحدة والباور', 'اطلع الرام وارجعها بقوة، وجرّب كل سلوط', 'فصّل كابلات اللوحة الأمامية (زر/USB) وجرّب', 'جرّب باور سبلاي ثاني إذا متوفر'] },
+    r_standby: { t: 'لمبة تضوي بس ما يقلع', c: ['زر الباور أو كيبله', 'الباور سبلاي ضعيف', 'اللوحة الأم'],
+      s: ['اتصل بدبوسين PWR_SW على اللوحة بمفك لتشغيله مباشرة (يثبت إذا الزر خربان)', 'جرّب باور ثاني', 'اطلع بطارية CMOS دقيقتين وارجعها'] },
+    r_cable: { t: 'كيبل أو مقبس الكهرباء', c: ['الكيبل أو المقبس أو مفتاح الباور خلف الجهاز'], s: ['استعمل كيبل ومقبس سليمين'] },
+    r_psu: { t: 'مكتبي ما يشتغل أبدًا', c: ['الباور سبلاي تالف (الأرجح)', 'زر الباور أو كيبله', 'اللوحة الأم'],
+      s: ['جرّب باور سبلاي ثاني سليم', 'افحص مفتاح الباور خلف الجهاز', 'جرّب تشغيل اللوحة بدبوسي PWR_SW', 'إذا بقي ميت: اللوحة الأم'] },
+    r_lap_dead: { t: 'لابتوب ما يشتغل', c: ['الشاحن أو منفذ الشحن', 'بطارية ميتة أو منتفخة', 'اللوحة الأم'],
+      s: ['جرّب شاحن ثاني بنفس المواصفات', 'فصّل الشاحن والبطارية (إن كانت تنفصل) واضغط زر التشغيل 30 ثانية ثم أعد التوصيل', 'افحص منفذ الشحن عن تلف أو حرارة'] },
+    r_display: { t: 'الشاشة أو الكيبل', c: ['الشاشة أو كيبل HDMI/DP تالف', 'مصدر الإدخال (Input) غلط على الشاشة'], s: ['غيّر الكيبل والمنفذ', 'اختر المصدر الصحيح بالشاشة'] },
+    r_gpu: { t: 'مشكلة بكرت الشاشة (أو البيب يدل عليه)', c: ['كرت الشاشة غير مثبّت أو تماسه وسخ', 'وصلة الطاقة الإضافية للكرت', 'الكرت نفسه تالف'],
+      s: ['اطلع الكرت ونظّف التماس بممحاة وارجعه', 'تأكد من وصلة الطاقة (6/8 pin)', 'وصّل الشاشة بمنفذ اللوحة الأم إن وجد', 'جرّب كرت ثاني'] },
+    r_ram: { t: 'الرام غالبًا (أو سلوطها)', c: ['شريحة رام وسخة أو غير مثبّتة', 'شريحة رام تالفة أو سلوط تالف', 'بطارية CMOS أو إعدادات BIOS', 'معالج أو لوحة (أقل احتمال)'],
+      s: ['اطلع الرام ونظّف التماس بممحاة وارجعها بقوة', 'جرّب شريحة وحدة وكل سلوط على حدة', 'اطلع بطارية CMOS 5 دقايق وارجعها', 'اختبر الرام بـMemtest86+ من الفلاشة إذا قلع الجهاز'] },
+    r_beep_ok: { t: 'بيب قصير واحد', c: ['هذا الطبيعي: يعني اجتاز فحص POST'], s: ['إذا ما يقلع بعدها فالمشكلة بالقرص أو الإقلاع: جرّب فلاشة الفحص'] },
+    r_beep_hot: { t: 'بيب سريع متواصل', c: ['سخونة المعالج أو مروحته متوقفة', 'مشكلة بالباور'], s: ['افحص مروحة المعالج تدور', 'نظّف التراب وغيّر المعجون الحراري', 'جرّب باور ثاني'] },
+    r_nodisk: { t: 'ما يشوف نظام التشغيل أو القرص', c: ['القرص ما معترف به (كيبل SATA/NVMe أو تلف)', 'ترتيب الإقلاع/UEFI-Legacy بالـBIOS', 'ملفات الإقلاع تالفة أو قسم ويندوز تالف'],
+      s: ['ادخل BIOS: هل يظهر القرص؟ (إذا لا → كيبل/قرص تالف)', 'غيّر كيبل ومنفذ SATA', 'تأكد أن القرص هو أول خيار إقلاع', 'افحص بفلاشة الفحص لمعرفة حالة القرص وملفات الإقلاع'], usb: true },
+    r_logo: { t: 'يعلّق عند الشعار', c: ['قرص فيه قطاعات تالفة', 'رام تالفة', 'تحديث ويندوز فاشل أو ملفات تالفة'],
+      s: ['افصل كل الأجهزة الخارجية وجرّب', 'اطلع الرام وجرّب شريحة شريحة', 'افحص القرص بفلاشة الفحص'], usb: true },
+    r_cmos: { t: 'رسالة CMOS أو الوقت', c: ['بطارية CMOS (CR2032) ضعيفة'], s: ['غيّر بطارية CMOS بالجديدة', 'اضبط التاريخ والإعدادات بالـBIOS'] },
+    r_repair: { t: 'يدخل Startup Repair بدون فايدة', c: ['ملفات إقلاع ويندوز تالفة', 'قرص فيه أخطاء', 'تحديث أو تعريف فاسد'],
+      s: ['افحص القرص بفلاشة الفحص (تقرأ سجل Startup Repair بنفسها)', 'جرّب Startup Repair/System Restore من قرص تثبيت ويندوز', 'انسخ بياناتك قبل أي إعادة تثبيت'], usb: true },
+    r_slow: { t: 'بطيء أو يعلّق', c: ['القرص (خصوصًا HDD) فيه مشاكل أو شبه ممتلئ', 'رام قليلة أو تالفة', 'حرارة عالية تخفّض الأداء', 'فيروسات أو برامج كثيرة بالإقلاع'],
+      s: ['شغّل الفحص السريع/برنامج الكمبيوتر وشوف حالة SMART', 'نظّف المراوح وافحص الحرارة', 'قلّل برامج بدء التشغيل'], usb: true },
+    r_bsod_unknown: { t: 'شاشة زرقاء بدون كود', c: ['رام أو قرص أو تعريف (الأشيع)', 'حرارة أو باور'],
+      s: ['عطّل الريستارت التلقائي: System Properties ← Advanced ← Startup and Recovery', 'شغّل برنامج الكمبيوتر (EXE): يقرأ آخر أكواد الشاشة الزرقاء من السجل', 'أو افحص بالفلاشة، تقرأ ملفات minidump من القرص'], usb: true },
+    r_heat: { t: 'ينطفي مع السخونة', c: ['تراب بالمراوح والمشتتات', 'معجون حراري ناشف', 'مروحة معطّلة'], s: ['نظّف التراب بهواء مضغوط', 'غيّر المعجون الحراري', 'افحص دوران المراوح', 'راقب الحرارة ببرنامج الكمبيوتر أو الفلاشة (اختبار ضغط 25 ثانية)'], usb: true },
+    r_random: { t: 'ينطفي عشوائيًا', c: ['باور سبلاي ضعيف (الأرجح)', 'رام أو لوحة أم', 'بطارية CMOS', 'كيبلات سائبة'], s: ['جرّب باور ثاني', 'اعد تثبيت الرام والكيبلات', 'راقب سجلات Kernel-Power بالبرنامج'], usb: true },
+    r_charger: { t: 'الشاحن تالف', c: ['الشاحن أو كيبله'], s: ['استبدل الشاحن بمواصفات مطابقة'] },
+    r_chport: { t: 'لابتوب ما يشحن مع شاحن سليم', c: ['منفذ الشحن مكسور', 'بطارية ميتة', 'دائرة الشحن باللوحة'], s: ['حرّك الكيبل بالمنفذ وشوف إذا يتقطع', 'جرّب تشغيله بدون بطارية', 'قرّر بين تبديل المنفذ أو البطارية عند فني'] }
+  };
+  var BSODS = [
+    [0x0A, 'IRQL_NOT_LESS_OR_EQUAL', 'تعريف أو رام', 'ارجع/حدّث آخر تعريف ثبتّه، واختبر الرام'],
+    [0x19, 'BAD_POOL_HEADER', 'رام أو تعريف', 'اختبر الرام وحدّث التعريفات'],
+    [0x1A, 'MEMORY_MANAGEMENT', 'الرام غالبًا', 'اختبر الرام بـMemtest86+ وجرّب الشرائح واحدة واحدة'],
+    [0x1E, 'KMODE_EXCEPTION_NOT_HANDLED', 'تعريف', 'حدّث أو احذف آخر تعريف'],
+    [0x24, 'NTFS_FILE_SYSTEM', 'القرص أو نظام الملفات', 'افحص القرص (SMART) وشغّل chkdsk'],
+    [0x3B, 'SYSTEM_SERVICE_EXCEPTION', 'تعريف أو ملفات نظام', 'حدّث التعريفات وشغّل sfc /scannow'],
+    [0x50, 'PAGE_FAULT_IN_NONPAGED_AREA', 'رام أو قرص أو تعريف', 'اختبر الرام والقرص'],
+    [0x7A, 'KERNEL_DATA_INPAGE_ERROR', 'القرص أو كيبله أو الرام', 'افحص القرص (SMART) وغيّر كيبل SATA'],
+    [0x7B, 'INACCESSIBLE_BOOT_DEVICE', 'القرص أو وضع SATA (AHCI/RAID) أو تعريفه', 'تحقق من القرص والـBIOS، وافحص بالفلاشة'],
+    [0x9C, 'MACHINE_CHECK_EXCEPTION', 'عتاد: معالج أو حرارة', 'افحص الحرارة والمعالج'],
+    [0x9F, 'DRIVER_POWER_STATE_FAILURE', 'تعريف أو إدارة الطاقة', 'حدّث التعريفات وعطّل الإيقاف الذكي لـUSB'],
+    [0xC2, 'BAD_POOL_CALLER', 'تعريف أو رام', 'حدّث التعريفات واختبر الرام'],
+    [0xD1, 'DRIVER_IRQL_NOT_LESS_OR_EQUAL', 'تعريف', 'حدّث أو ارجع التعريف المسبب'],
+    [0xED, 'UNMOUNTABLE_BOOT_VOLUME', 'نظام ملفات القرص تالف', 'chkdsk من قرص التثبيت، وافحص القرص بالفلاشة'],
+    [0xEF, 'CRITICAL_PROCESS_DIED', 'ملفات نظام أو قرص', 'افحص القرص وشغّل sfc /scannow من وضع الاسترداد'],
+    [0x101, 'CLOCK_WATCHDOG_TIMEOUT', 'معالج أو حرارة أو BIOS', 'حدّث BIOS وافحص الحرارة'],
+    [0x109, 'CRITICAL_STRUCTURE_CORRUPTION', 'رام أو تعريف', 'اختبر الرام'],
+    [0x116, 'VIDEO_TDR_FAILURE', 'كرت الشاشة أو تعريفه', 'حدّث/أعد تثبيت تعريف الكرت وافحص حرارته'],
+    [0x117, 'VIDEO_TDR_TIMEOUT_DETECTED', 'كرت الشاشة', 'حدّث تعريف الكرت وافحص حرارته'],
+    [0x124, 'WHEA_UNCORRECTABLE_ERROR', 'عتاد: معالج أو رام أو باور أو لوحة', 'اختبر الرام، افحص الحرارة والباور'],
+    [0x133, 'DPC_WATCHDOG_VIOLATION', 'تعريف (غالبًا SSD) أو قرص', 'حدّث فيرموير/تعريف القرص']
+  ];
+  var wizStack = ['start'];
+
+  function wizRender() {
+    var id = wizStack[wizStack.length - 1], box = $('#wq');
+    if (WIZ[id]) {
+      box.innerHTML = '<div class="card"><b>' + esc(WIZ[id].q) + '</b></div>' + WIZ[id].o.map(function (o, i) {
+        return '<button class="opt" data-i="' + i + '">' + esc(o[0]) + '</button>';
+      }).join('');
+      box.querySelectorAll('.opt').forEach(function (b) {
+        b.onclick = function () { wizStack.push(WIZ[id].o[b.dataset.i][1]); wizRender(); };
+      });
+    } else {
+      var r = WRES[id];
+      box.innerHTML = '<div class="card warn"><b>🔎 ' + esc(r.t) + '</b>' +
+        '<div class="d"><b>الأسباب المحتملة (من الأرجح):</b><ul>' + r.c.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>' +
+        '<div class="d"><b>شنو تسوي:</b><ul>' + r.s.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>' +
+        (r.usb ? '<div class="f">💡 ' + esc(USBTIP) + '</div>' : '') + '</div>' +
+        '<button class="big ghost" id="wadd">➕ أضف للتقرير</button>';
+      $('#wadd').onclick = function () {
+        setR('wiz_' + id, 'مساعد الأعطال: ' + r.t, 'warn', 'الأسباب المحتملة: ' + r.c.join(' ، '), r.s.join(' • '));
+        $('#wadd').textContent = '✔ أُضيف للتقرير';
+      };
+    }
+  }
+  $('#wback').onclick = function () { if (wizStack.length > 1) wizStack.pop(); wizRender(); };
+  $('#wreset').onclick = function () { wizStack = ['start']; wizRender(); };
+
+  $('#bsodGo').onclick = function () {
+    var q = $('#bsod').value.trim().toLowerCase(), out = $('#bsodOut');
+    if (!q) { out.innerHTML = ''; return; }
+    var num = /^0x[0-9a-f]+$/.test(q) ? parseInt(q, 16) : null;
+    var hit = BSODS.filter(function (b) { return (num !== null && b[0] === num) || b[1].toLowerCase().indexOf(q.replace(/\s+/g, '_')) >= 0; });
+    out.innerHTML = hit.length ? hit.map(function (b) {
+      return '<div class="card warn"><b dir="ltr" style="text-align:right">' + esc(b[1]) + ' (0x' + b[0].toString(16).toUpperCase() + ')</b>' +
+        '<div class="d">السبب الأرجح: ' + esc(b[2]) + '</div><div class="f">' + esc(b[3]) + '</div></div>';
+    }).join('') : '<div class="card"><div class="d">ما لقيت هذا الكود بالقائمة. اعمل فحص بالفلاشة أو برنامج الكمبيوتر حتى يقرأه من السجل.</div></div>';
+  };
+  wizRender();
+
+  $('#runAll').onclick = fullScan;
   document.querySelectorAll('[data-test]').forEach(function (b) { b.onclick = function () { TESTS[b.dataset.test](); }; });
   $('#runQuick').onclick = quick;
   $('#copy').onclick = function () {
