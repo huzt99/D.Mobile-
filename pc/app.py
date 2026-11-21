@@ -31,12 +31,19 @@ class App(tk.Tk):
         st.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
+        self.deep = tk.BooleanVar(value=False)
         self.btns = [
             ttk.Button(top, text="🖥  فحص الكمبيوتر", command=self.scan_pc),
             ttk.Button(top, text="📱  فحص الموبايل (USB)", command=self.scan_phone),
+            ttk.Button(top, text="🔍  فحص جهاز آخر", command=self.remote_dialog),
+            ttk.Button(top, text="💽  فحص قرص جهاز معطّل", command=self.offline_dialog),
             ttk.Button(top, text="💾  حفظ التقرير", command=self.save),
             ttk.Button(top, text="🗑  مسح", command=self.clear),
         ]
+        ttk.Checkbutton(top, text="فحص عميق (2–4 دقائق)", variable=self.deep).pack(side="right", padx=8)
+        self.btn_srv = ttk.Button(top, text="📡  وضع الاستقبال", command=self.toggle_server)
+        self.btn_srv.pack(side="right", padx=4)
+        self.server = None
         for b in self.btns:
             b.pack(side="right", padx=4)
         self.status = tk.StringVar(value="جاهز. اختر نوع الفحص.")
@@ -66,8 +73,162 @@ class App(tk.Tk):
         self.detail.pack(fill="x", padx=8, pady=8)
         self._count()
 
+    def toggle_server(self):
+        if self.server:
+            self.server.stop()
+            self.server = None
+            self.btn_srv.configure(text="📡  وضع الاستقبال")
+            self.status.set("تم إيقاف وضع الاستقبال.")
+            return
+        try:
+            srv = core.RemoteServer(8765, scan_fn=lambda deep=False: core.run_all_pc(deep))
+            srv.start()
+        except OSError as e:
+            messagebox.showerror("وضع الاستقبال", f"تعذّر فتح المنفذ 8765: {e}")
+            return
+        self.server = srv
+        self.btn_srv.configure(text="⏹  إيقاف الاستقبال")
+        ip = core.local_ip()
+        self.status.set(f"جاهز للموبايل — IP: {ip}   PIN: {srv.pin}")
+        messagebox.showinfo("وضع الاستقبال",
+                            f"من تطبيق الموبايل (تبويب «جهاز آخر») أو من DeviceDoctor على كمبيوتر ثاني (زر «فحص جهاز آخر») اكتب:\n\nIP: {ip}\nPIN: {srv.pin}\n\n"
+                            "لازم الاثنين على نفس الشبكة. " + ("فتحت قاعدة Firewall للمنفذ 8765 وتنغلق عند الإيقاف." if srv.fw else "إذا ما اتصل: اسمح للبرنامج بالـFirewall (شبكة خاصة)."))
+
+
+    # ───────── فحص جهاز آخر (كمبيوتر أو موبايل بوضع الاستقبال) ─────────
+    def remote_dialog(self):
+        if self.busy:
+            return
+        w = tk.Toplevel(self)
+        w.title("فحص جهاز آخر")
+        w.geometry("470x370")
+        w.transient(self)
+        f = ttk.Frame(w, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="على الجهاز الثاني شغّل «وضع الاستقبال» (كمبيوتر: DeviceDoctor، موبايل: التطبيق)،\nثم اكتب IP وPIN اللي يظهرون هناك أو اضغط بحث تلقائي.", justify="right").pack(anchor="e")
+        ip_v, pin_v, deep_v = tk.StringVar(), tk.StringVar(), tk.BooleanVar(value=self.deep.get())
+        ttk.Label(f, text="IP").pack(anchor="e", pady=(10, 0))
+        ttk.Entry(f, textvariable=ip_v, justify="left").pack(fill="x")
+        ttk.Label(f, text="PIN").pack(anchor="e", pady=(6, 0))
+        ttk.Entry(f, textvariable=pin_v, justify="left").pack(fill="x")
+        ttk.Checkbutton(f, text="فحص عميق (للكمبيوتر فقط)", variable=deep_v).pack(anchor="e", pady=6)
+        st = tk.StringVar()
+        ttk.Label(f, textvariable=st, foreground="#555").pack(anchor="e")
+
+        def find():
+            st.set("جاري البحث على الشبكة ...")
+
+            def work():
+                found = core.discover_lan()
+                self.after(0, lambda: done(found))
+
+            def done(found):
+                if found:
+                    ip_v.set(found[0][0])
+                    st.set("لقيت: " + "، ".join(f"{i} ({(p or {}).get('name', '')})" for i, p in found))
+                else:
+                    st.set("ما لقيت جهاز. تأكد من وضع الاستقبال والشبكة.")
+            threading.Thread(target=work, daemon=True).start()
+
+        def go():
+            ip, pin = ip_v.get().strip(), pin_v.get().strip()
+            if not ip or not pin:
+                st.set("اكتب IP وPIN.")
+                return
+            deep = deep_v.get()
+            w.destroy()
+
+            def work():
+                self.q.put(("status", f"جاري فحص {ip} ... (قد يستغرق دقائق)"))
+                try:
+                    info, res = core.remote_scan(ip, pin, deep)
+                    for r in res:
+                        self.q.put(("row", r))
+                except (ConnectionError, PermissionError) as e:
+                    self.q.put(("row", core.Result("جهاز آخر", f"فحص {ip}", core.BAD, str(e))))
+                except Exception as e:
+                    self.q.put(("row", core.Result("جهاز آخر", f"فحص {ip}", core.BAD, f"فشل: {e}")))
+                self.q.put(("done", None))
+            self._start(work)
+        adapters = {}
+
+        def direct():
+            rows = core.list_adapters()
+            if not rows:
+                st.set("ما لقيت كرت شبكة سلكي شغّال. وصّل الكيبل بين الجهازين وتأكد أن الثاني مشغّل.")
+                return
+            nm = rows[0].get("Name")
+            adapters["last"] = nm
+            if core.set_static_ip(nm):
+                ip_v.set(core.DIRECT_PEER)
+                st.set(f"جاهز على {nm}: عنوانك {core.DIRECT_ME}. الجهاز المعطّل لازم يكون {core.DIRECT_PEER} (الفلاشة تضبطه تلقائيًا).")
+            else:
+                st.set("تعذّر ضبط عنوان الكرت (شغّل البرنامج كمسؤول).")
+
+        def undo():
+            nm = adapters.get("last") or (core.list_adapters() or [{}])[0].get("Name")
+            st.set("رجّعت الكرت لـDHCP." if nm and core.restore_dhcp(nm) else "تعذّر الإرجاع؛ من إعدادات الشبكة اختر «الحصول تلقائيًا».")
+        r = ttk.Frame(f)
+        r.pack(fill="x", pady=8)
+        r2 = ttk.Frame(f)
+        r2.pack(fill="x")
+        ttk.Button(r2, text="🔌 تجهيز كيبل مباشر", command=direct).pack(side="right", padx=4)
+        ttk.Button(r2, text="↩ إرجاع الشبكة", command=undo).pack(side="right", padx=4)
+        ttk.Button(r, text="🔎 بحث تلقائي", command=find).pack(side="right", padx=4)
+        ttk.Button(r, text="▶ افحص", command=go).pack(side="right", padx=4)
+
+    # ───────── فحص قرص جهاز معطّل (قرصه موصول بهذا الكمبيوتر) ─────────
+    def offline_dialog(self):
+        if self.busy:
+            return
+        w = tk.Toplevel(self)
+        w.title("فحص قرص جهاز معطّل")
+        w.geometry("520x330")
+        w.transient(self)
+        f = ttk.Frame(w, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, justify="right", text="طلّع قرص الجهاز المعطّل ووصّله بهذا الكمبيوتر (علبة USB أو SATA).\n"
+                  "إذا ويندوز سأل «تهيئة القرص» اضغط إلغاء؛ لا تهيّئه.\n"
+                  "القرص المشفّر بـBitLocker لازم تفتحه أولًا بمفتاح الاسترداد.").pack(anchor="e")
+        var = tk.StringVar()
+        cb = ttk.Combobox(f, textvariable=var, state="readonly", justify="left")
+        cb.pack(fill="x", pady=8)
+        st = tk.StringVar()
+        ttk.Label(f, textvariable=st, foreground="#555").pack(anchor="e")
+        deep_v = tk.BooleanVar(value=self.deep.get())
+        ttk.Checkbutton(f, text="فحص عميق (chkdsk للقسم، قد ياخذ دقائق طويلة)", variable=deep_v).pack(anchor="e", pady=4)
+
+        def refresh():
+            roots = core.find_offline_windows()
+            cb["values"] = roots
+            if roots:
+                var.set(roots[0])
+                st.set(f"لقيت {len(roots)} قسم فيه ويندوز.")
+            else:
+                st.set("ما لقيت ويندوز على أي قرص موصول. وصّل القرص واضغط «تحديث» (أو القسم مشفّر/تالف).")
+
+        def go():
+            root = var.get()
+            if not root:
+                st.set("اختر القسم أولًا.")
+                return
+            deep = deep_v.get()
+            w.destroy()
+
+            def work():
+                self.q.put(("status", f"جاري فحص ويندوز على {root} ..."))
+                for r in core.check_offline_windows(root, deep):
+                    self.q.put(("row", r))
+                self.q.put(("done", None))
+            self._start(work)
+        r = ttk.Frame(f)
+        r.pack(fill="x", pady=8)
+        ttk.Button(r, text="🔄 تحديث", command=refresh).pack(side="right", padx=4)
+        ttk.Button(r, text="▶ افحص", command=go).pack(side="right", padx=4)
+        refresh()
+
     def _buttons(self, on):
-        for b in self.btns[:2]:
+        for b in self.btns[:4]:
             b.configure(state="normal" if on else "disabled")
 
     def _start(self, work):
@@ -79,11 +240,13 @@ class App(tk.Tk):
         threading.Thread(target=work, daemon=True).start()
 
     def scan_pc(self):
+        deep = self.deep.get()
+
         def work():
             if not core.IS_WIN:
                 self.q.put(("row", core.Result("الكمبيوتر", "فحص الكمبيوتر", core.INFO, "فحص الكمبيوتر يعمل على ويندوز فقط")))
             else:
-                for label, fn in core.pc_checks():
+                for label, fn in core.pc_checks(deep):
                     self.q.put(("status", f"جاري فحص: {label} ..."))
                     for r in core.safe("الكمبيوتر", label, fn):
                         self.q.put(("row", r))
